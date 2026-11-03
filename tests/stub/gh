@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# 測試用的假 gh：依 API path 回 tests/fixtures 的 JSON，並像真的 gh 一樣套用 --jq（raw 輸出）。
+# 情境開關（環境變數）：
+#   STUB_START_OFFSET  in_progress job 的 started_at = now + 這個秒數（負＝過去、正＝未來）
+#   STUB_NO_ADMIN=1    orgs/*/actions/runners 回 403（模擬沒有 admin:org）
+set -euo pipefail
+FX="$(cd "$(dirname "$0")/../fixtures" && pwd)"
+off="${STUB_START_OFFSET:--125}"
+
+sub="${1:-}"; shift || true
+if [ "$sub" = "repo" ]; then echo "not a git repository" >&2; exit 1; fi
+
+path=""; jqexpr=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --jq) jqexpr="$2"; shift 2;;
+    --json|-H|--repo) shift 2;;
+    --paginate) shift;;
+    *) [ -n "$path" ] || path="$1"; shift;;
+  esac
+done
+
+emit() { if [ -n "$jqexpr" ]; then jq -r "$jqexpr"; else cat; fi; }
+
+if [ "$sub" = "pr" ]; then emit < "$FX/pr.json"; exit 0; fi
+
+case "$path" in
+  orgs/*/actions/runners*)
+    if [ "${STUB_NO_ADMIN:-0}" = 1 ]; then
+      echo '{"message":"Must have admin rights to Repository.","status":"403"}'; exit 1
+    fi
+    emit < "$FX/runners.json";;
+  orgs/*/repos*) emit < "$FX/repos.json";;
+  repos/*/actions/runs/*/jobs*)
+    jq --arg off "$off" '(.jobs[] | select(.status=="in_progress") | .started_at) |= ((now + ($off|tonumber)) | floor | todate)' \
+      "$FX/jobs.json" | emit;;
+  repos/*/actions/runs*) emit < "$FX/runs.json";;
+  repos/*/commits/*/pulls) echo '[]' | emit;;
+  *) echo "stub gh：沒有對應 fixture：$path" >&2; exit 1;;
+esac

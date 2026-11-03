@@ -1,0 +1,4 @@
+{"total_count":3,"runners":[
+ {"name":"runner-a","status":"online","busy":true,"labels":[{"name":"self-hosted"},{"name":"linux"}]},
+ {"name":"runner-b","status":"online","busy":false,"labels":[{"name":"self-hosted"},{"name":"linux"}]},
+ {"name":"runner-c","status":"offline","busy":false,"labels":[{"name":"self-hosted"},{"name":"macOS"}]}]}

@@ -1,0 +1,409 @@
+#!/usr/bin/env bash
+# pr-runners — 看 CI 在哪台 self-hosted runner 上跑：可綁一個 PR，也可只看 runner
+#
+# 用法：
+#   pr-runners <PR 編號> [--repo owner/name] [--watch] [--local]   # PR 檢視
+#   pr-runners --runners   [--repo owner[/name]] [--watch]         # 只看 runner 目前工作
+#
+# PR 檢視：頂部 🖥 Runner 名冊（誰忙誰閒，忙的含「其他 repo」的 job），下面兩區按
+# 時間排序 —— ▶ 進行中/排隊、✓ 已完成（含每次 push、每次重跑 re-run 的 attempt）。
+#
+# --runners：不綁 PR，直接跨 org 掃出「現在正在跑的 self-hosted runner + 它在哪個
+#   repo 的哪個 job」。配 --watch 持續重刷監控（Ctrl-C 結束）。
+#   在非 git repo 目錄用時，要嘛 --repo <org>，要嘛先 export PR_RUNNERS_ORG=<org>。
+#
+#   --repo   指定 owner/name（--runners 只需 <org> 亦可）；預設自動偵測當前 git repo
+#   --watch  重刷（預設每 60 秒；見 PR_RUNNERS_INTERVAL）。PR 檢視：跑完即停；
+#            --runners：持續監控直到 Ctrl-C
+#   --local  （僅 PR 檢視）只依本 PR 觀察，不跨 org 掃描其他 repo（較快）
+#   -h, --help  顯示這段說明
+#
+# 環境變數：
+#   PR_RUNNERS_ORG      --runners 的預設 org；設了就能在任何目錄直接 `pr-runners --runners`
+#   PR_RUNNERS_INTERVAL --watch 的重刷秒數（預設 60）。每 tick 會掃 org 每個 repo，
+#                       間隔太短會吃光 GitHub 的 5,000 calls/hr 配額——org repo 多請調大。
+#
+# 已跑時間顯示 ⚠? ＝ GitHub API 回傳的開始時間在「未來」（GitHub 端時間戳偏移，
+#   2026-11-01 實測整點 +1h），此時已跑時間與 HH:MM 都不可信，畫面底部會加註。
+#
+# 需要：gh（已登入）、jq、bash
+set -euo pipefail
+
+usage() { awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"; }
+die_usage() { printf 'pr-runners：%s\n（pr-runners --help 看用法）\n' "$1" >&2; exit 2; }
+
+# byte-wise 排序：輸出含 emoji（🟢⚪🔴）與可能的 CJK job 名，macOS 的 sort 在 UTF-8
+# locale 下碰到多位元組會噴「Illegal byte sequence」。排序鍵都是 ASCII（數字 + runner
+# 名），走 C locale 逐位元組排序完全正確，且 printf 仍原樣輸出 UTF-8 bytes。
+export LC_ALL=C
+
+# --watch 的重刷間隔（秒）。預設 60 是**經 rate-limit 算過**的，不是隨手取的：
+# 每個 tick 會掃 org 底下每個 repo 的 in_progress runs（9 repos ≈ 12～25 次 API 呼叫）。
+#   10s → 360 ticks/hr × ~18 ≈ 6,500 calls/hr ❌ 超過 GitHub 認證用戶 5,000/hr 上限，
+#         配額耗盡後 API 開始回錯，監控畫面就失去意義（codex 審查 å repo #1020 P2）。
+#   60s →  60 ticks/hr × ~18 ≈ 1,080 calls/hr ✅ 安全，且留餘裕給共用同一 token 的其他工具。
+# org repo 數量多的話請往上調：PR_RUNNERS_INTERVAL=120 pr-runners --runners --watch
+INTERVAL="${PR_RUNNERS_INTERVAL:-60}"
+
+PR=""; REPO=""; WATCH=0; LOCAL=0; RUNNERS=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    # `shift 2` 在缺值時會失敗、set -e 下整支靜默退出 —— 先檢查再 shift。
+    --repo) [ $# -ge 2 ] && [ -n "$2" ] && [ "${2#-}" = "$2" ] || die_usage "--repo 需要一個值（owner/name 或 org）"
+            REPO="$2"; shift 2;;
+    --repo=*) REPO="${1#*=}"; [ -n "$REPO" ] || die_usage "--repo 需要一個值（owner/name 或 org）"; shift;;
+    --watch) WATCH=1; shift;;
+    --local) LOCAL=1; shift;;
+    --runners) RUNNERS=1; shift;;
+    -h|--help) usage; exit 0;;
+    -*) die_usage "不認得的選項：$1";;
+    *) [ -z "$PR" ] || die_usage "只能給一個 PR 編號（多了：$1）"
+       PR="${1#\#}"; shift;;   # 容許貼上 "#123"
+  esac
+done
+if [ "$RUNNERS" = 1 ]; then
+  [ -z "$PR" ] || die_usage "--runners 不綁 PR，請拿掉 PR 編號（$PR）"
+  [ "$LOCAL" = 0 ] || die_usage "--local 只用在 PR 檢視，--runners 本來就要跨 repo 掃描"
+elif [ -z "$PR" ]; then
+  die_usage "請給 PR 編號，或用 --runners"
+fi
+[ -z "$PR" ] || case "$PR" in *[!0-9]*) die_usage "PR 編號要是數字：$PR";; esac
+case "$INTERVAL" in ''|*[!0-9]*|0) die_usage "PR_RUNNERS_INTERVAL 要是正整數秒數：$INTERVAL";; esac
+for dep in gh jq; do
+  command -v "$dep" >/dev/null 2>&1 || { echo "pr-runners：找不到 $dep，請先安裝（brew install $dep）" >&2; exit 127; }
+done
+
+# `${arr[@]+...}` 寫法：bash < 4.4（macOS 內建的 /bin/bash 3.2）在 set -u 下展開空陣列
+# 會噴 unbound variable。
+REPO_FLAG=(); [ -z "$REPO" ] || REPO_FLAG=(--repo "$REPO")
+
+# 跨 org 掃描：對 org 底下每個 repo 查「正在跑的 self-hosted job」，反推出每台
+# runner 現在忙在哪個 repo 的哪個 job、屬於哪個 PR。只需要 repo + read:org scope
+# （不需要 admin:org 的 runners API）。回傳 TSV：
+#   repo \t runner \t workflow→job \t 已跑多久 \t PR標籤
+# PR 標籤：same-repo PR run 帶 pull_requests[].number → PR#N；push/fork 等沒有 PR
+# 關聯的 → event:branch（例如 push:main）。
+_scan_repo() {
+  local full="$1"
+  # 先從 run 物件本身取 PR 關聯（id / PR號 / event / branch / head_sha），不必額外 API。
+  # 空欄位補 sentinel `-`：tab 是空白字元，`IFS=$'\t' read` 會摺疊相鄰 tab（空欄位），
+  # 導致後面欄位左移錯位（PR 號常為空 → 曾把 event 讀成 PR 號）。補 `-` 讓欄位永不為空。
+  # --paginate + per_page=100：未分頁時只看得到第一頁，repo 若有超過該頁量的
+  # in_progress run，後面那些 run 上的 runner 會整個看不到 —— 忙碌的 runner 被顯示成
+  # 閒置/消失，正是這支工具存在要消滅的症狀（codex 審查 å repo #1020 P2）。
+  # 成本：常見情況（run 數 < 100）仍是 1 頁 = 與原本同樣一次呼叫，不影響 rate limit。
+  gh api "repos/$full/actions/runs?status=in_progress&per_page=100" --paginate \
+    --jq '.workflow_runs[] | "\(.id)\t\(.pull_requests[0].number // "-")\t\(.event)\t\(.head_branch // "-")\t\(.head_sha)"' 2>/dev/null \
+  | while IFS=$'\t' read -r rid pr event branch sha; do
+      # ── 先抓 jobs，再決定要不要解析 PR 標籤（順序是刻意的，codex 審查 å repo #1020 P2）──
+      # 這個 repo 的 in_progress run 很多是 hosted 的 push/排程 run，最後一個
+      # self-hosted job 都沒有。若像先前那樣「先算 prtag 再抓 jobs」，那些 run 的
+      # PR 反查（commits/{sha}/pulls）就是純浪費 —— 而且在 --watch 下每 tick 重複。
+      # 改成先抓 jobs、沒有 self-hosted job 就 continue，PR 反查只發生在真的要顯示時。
+      local jobs
+      # shellcheck disable=SC2016  # 單引號內的 $s 是 jq 變數，不是 shell 變數
+      jobs=$(gh api "repos/$full/actions/runs/$rid/jobs?per_page=100" --paginate --jq '
+        .jobs[]
+        | select(.status=="in_progress"
+                 and ((.labels//[])|index("self-hosted"))
+                 and .runner_name)
+        | (if .started_at then (now-(.started_at|fromdateiso8601)) else 0 end) as $s
+        # 負值＝GitHub 回的 started_at 在未來（GitHub 端時間戳偏移），算不出已跑多久，
+        # 標 ⚠? 而不是印出 -51m-5s 這種誤導人的數字；呼叫端看到 ⚠? 會在底部加註。
+        | [.runner_name, (.workflow_name+" → "+.name),
+           (if $s < 0 then "⚠?" else "\(($s/60)|floor)m\(($s%60)|floor)s" end)] | @tsv' 2>/dev/null) || continue
+      [ -n "$jobs" ] || continue
+
+      # 到這裡才確定「這個 run 有 self-hosted job 要顯示」，PR 標籤現在才值得解析。
+      local prtag
+      [ "$branch" = "-" ] && branch=""
+      if [ "$pr" != "-" ]; then
+        prtag="PR#$pr"
+      elif [ "$event" = "push" ]; then
+        # push 事件（例如合併後在 main 上再跑一輪）—— run 物件無 PR 關聯。但這個
+        # commit 常是某個 PR 的 merge commit，用 SHA 反查把來源 PR 帶出來，顯示成
+        # push:main←#1001，明確區分「合併後的 main CI」與「合併前的 PR CI」。
+        prtag="push${branch:+:$branch}"
+        local src
+        src=$(gh api "repos/$full/commits/$sha/pulls" --jq '.[0] // empty | .number' 2>/dev/null || true)
+        [ -n "$src" ] && prtag="$prtag←#$src"
+      else
+        # run 物件的 pull_requests 只在「head_sha 仍是某個 OPEN PR 的當前 tip」時才填。
+        # commit 被新 push 蓋過、或 PR 已關閉/合併 → 欄位變空。改用 SHA 反查（含 closed）
+        # 把號碼救回來；非 open 的加註狀態（這代表這是一個 PR 已收掉、run 還在跑的孤兒）。
+        local rec num st
+        rec=$(gh api "repos/$full/commits/$sha/pulls" --jq '.[0] // empty | "\(.number)\t\(.state)"' 2>/dev/null || true)
+        if [ -n "$rec" ]; then
+          num="${rec%%$'\t'*}"; st="${rec##*$'\t'}"
+          [ "$st" = "open" ] && prtag="PR#$num" || prtag="PR#$num($st)"
+        else
+          prtag="${event}${branch:+:$branch}"
+        fi
+      fi
+
+      printf '%s\n' "$jobs" \
+      | while IFS= read -r line; do
+          [ -n "$line" ] && printf '%s\t%s\t%s\n' "${full#*/}" "$line" "$prtag"
+        done
+    done
+}
+export -f _scan_repo
+
+# 契約：**永不失敗、可能輸出空**（結尾 `|| true`）。
+# 這支是唯讀診斷工具，查的是會抖動的外部 API，而每個呼叫點下游都已有「空值 fallback」。
+# 若讓 API 失敗冒泡到 `set -e`，整支會在渲染前靜默 exit —— 那些 fallback 永遠跑不到
+# （codex 審查 å repo #1020 P1 就是這個家族）。把保證放在生產者，呼叫端就不可能忘記加 `|| true`。
+org_busy() {
+  local org="$1" repos
+  # 同樣 capture-then-check：repos 清單失敗時 gh 的錯誤 JSON 會走 stdout，
+  # 無條件收下會把它當成 repo 名餵給 xargs。只在成功時才往下掃。
+  repos=$(gh api "orgs/$org/repos?per_page=100&type=all" --paginate --jq '.[].full_name' 2>/dev/null) || return 0
+  [ -n "$repos" ] || return 0
+  # 平行掃每個 repo（-P 8），把 9 個 repo 的往返從序列縮成幾秒
+  xargs -P 8 -I {} bash -c '_scan_repo "$@"' _ {} <<<"$repos" || true
+}
+
+# 權威 runner 名冊（含閒置/離線）：orgs/{org}/actions/runners。需要 admin:org（或
+# fine-grained 的 runners 讀取權限）。這是唯一能列出「開機、連線、但沒在跑 job」的
+# runner 的來源——閒置/離線的機器在 job 資料裡零痕跡，反推法看不到。
+# 回傳 TSV：name \t status(online/offline) \t busy(true/false) \t labels
+# 無權限（403）→ 輸出空，呼叫端退回 busy-only 舊行為 + 提示。
+# 契約同 org_busy：**永不失敗、可能輸出空**。無 admin:org 時 `gh api` 會以非零退出
+# （不只是輸出空），在 `set -e` 下會讓整支在「空 roster fallback」之前就死掉——正是
+# codex 審查 å repo #1020 P1 指出的：工具宣稱支援非 admin 使用者，實際上對他們完全不能用。
+org_roster() {
+  local org="$1" out
+  # **capture-then-check**，不是 `|| true`：`gh api` 失敗時會把錯誤回應的 JSON body
+  # 印到 **stdout**（2>/dev/null 擋不住），若無條件收下就會把 `"message": "Not Found"`
+  # 這類文字當成 runner 名字渲染出來（比直接 exit 更難察覺的假資料）。
+  # 只在成功時採用輸出；失敗一律回空 + exit 0，交給呼叫端的 fallback。
+  out=$(gh api "orgs/$org/actions/runners" --paginate \
+    --jq '.runners[] | "\(.name)\t\(.status)\t\(.busy)\t\([.labels[].name]|join(","))"' 2>/dev/null) || return 0
+  printf '%s' "$out"
+}
+
+# GitHub API 的時間戳偶爾整批偏到「未來」（2026-11-01 實測：merged_at 比 merge commit
+# 本身的 committer date 多整整 1h，run/job 的 created_at/started_at 同樣偏移），已跑時間
+# 會變負數。產生端標 ⚠?，這裡只負責在有 ⚠? 時於底部說明一次。
+skew_note() {
+  grep -qF '⚠?' <<<"$*" || return 0
+  printf '\n  \033[33m⚠? GitHub API 回傳的開始時間在未來（GitHub 端時間戳偏移），已跑時間無法計算；HH:MM 也可能跟著偏移。\033[0m\n'
+}
+
+# 取單一 run 的所有 job（含每次重跑 attempt），輸出 rows 格式（給 xargs -P 平行呼叫）。
+# 用 $REPO_ARG（export 進來）而非 $2，避免 xargs 引號問題。
+_run_rows() {
+  # 同族（å repo #1020 codex 未報但同樣會截斷）：>100 個 job 的 run 會漏掉後面的 attempt/job。
+  # shellcheck disable=SC2016  # 單引號內的 $st/$secs… 是 jq 變數
+  gh api "repos/$REPO_ARG/actions/runs/$1/jobs?filter=all&per_page=100" --paginate --jq '
+    .jobs[] |
+    (.status) as $st | (.conclusion) as $cc | (($st=="completed")) as $done |
+    (if $st=="in_progress" then 0 elif $done then 2 else 1 end) as $bucket |
+    ((.completed_at // .started_at // .created_at) | fromdateiso8601) as $epoch |
+    (($cc // $st)) as $res |
+    (if $res=="success" then "✓" elif $res=="failure" then "✗"
+     elif $res=="cancelled" then "⊘" elif $res=="skipped" then "–"
+     elif $st=="in_progress" then "▶" else "…" end) as $icon |
+    (if ((.labels//[])|index("self-hosted"))
+     then (.runner_name // "…待指派") else "☁️ hosted" end) as $runner |
+    (if (.started_at and .completed_at)
+       then ((.completed_at|fromdateiso8601)-(.started_at|fromdateiso8601))
+     elif .started_at then (now - (.started_at|fromdateiso8601))
+     else null end) as $secs |
+    (if $secs==null then "—" elif $secs < 0 then "⚠?"
+     else "\(($secs/60)|floor)m\(($secs%60)|floor)s" end) as $dur |
+    ((.started_at // .created_at) | fromdateiso8601 | strflocaltime("%H:%M")) as $hm |
+    [$bucket, ($epoch|tostring), $icon, $res, $runner,
+     (.workflow_name + " → " + .name), $dur, $hm] | @tsv
+  ' 2>/dev/null
+}
+export -f _run_rows
+
+render() {
+  # 也取 head repository（owner/name）—— 用來把「同名 branch 但不屬於本 PR」的 run
+  # 濾掉。典型情境：fork PR 的 head branch 剛好叫 main，光用 branch=main 查會把 base
+  # repo 每一次 push-to-main 的 run 也撈進來，診斷就失真（codex 審查 å repo #998 P2）。
+  IFS=$'\t' read -r HEAD TITLE HEADREPO < <(
+    gh pr view "$PR" ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --json headRefName,title,headRepository,headRepositoryOwner \
+      --jq '[.headRefName, .title, (.headRepositoryOwner.login + "/" + .headRepository.name)] | @tsv'
+  )
+  if [ -z "$REPO" ]; then
+    REPO=$(gh repo view ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --json nameWithOwner --jq .nameWithOwner 2>/dev/null) || REPO=""
+    [ -n "$REPO" ] || { echo "無法判斷 repo（不在 git repo 內？）。請用 --repo owner/name 指定。" >&2; exit 2; }
+  fi
+
+  # 本 PR 的所有 run（＝多次 push 的歷史）：先依 branch 撈，再用 head_repository 收斂到
+  # 「真的來自這個 PR 的 head repo」，剔除同名 branch 的無關 run（見上）。
+  local run_ids
+  run_ids=$({ gh api --paginate "repos/$REPO/actions/runs?branch=$HEAD&per_page=100" 2>/dev/null \
+    | jq -r --arg hr "$HEADREPO" '.workflow_runs[] | select(.head_repository.full_name == $hr) | .id' ; } || true)
+
+  # 把所有 run 的所有 job 攤平成一張表。每列：
+  #   bucket \t epoch \t icon \t status \t runner \t workflow→job \t dur \t HH:MM
+  # bucket: 0=進行中 1=排隊 2=已完成 —— 用來分區。filter=all 連重跑 attempt 都撈。
+  # 平行（-P 8）逐 run 取 job，把十幾個 run 的往返從序列縮成幾秒。
+  local rows
+  rows=$(REPO_ARG="$REPO" xargs -P 8 -I {} bash -c '_run_rows "$@"' _ {} <<<"$run_ids" || true)
+
+  # 總結列
+  local n_run n_q n_ok n_fail
+  n_run=$(awk -F'\t' '$1==0' <<<"$rows" | grep -c . || true)
+  n_q=$(awk  -F'\t' '$1==1' <<<"$rows" | grep -c . || true)
+  n_ok=$(awk -F'\t' '$1==2 && $4=="success"' <<<"$rows" | grep -c . || true)
+  n_fail=$(awk -F'\t' '$1==2 && $4=="failure"' <<<"$rows" | grep -c . || true)
+
+  clear 2>/dev/null || true
+  printf '\033[1mPR #%s\033[0m  %s\n' "$PR" "$TITLE"
+  printf '%s · \033[36m%s\033[0m\n' "$REPO" "$HEAD"
+  printf '\033[1m▶%s 進行中  …%s 排隊  ✓%s 成功  ✗%s 失敗\033[0m\n' "$n_run" "$n_q" "$n_ok" "$n_fail"
+
+  # ── 🖥 Runner 名冊 + 目前在跑什麼（含其他 repo）──────────────────────────
+  # 忙碌狀態來自跨 org 掃描（org_busy）：一台 runner 就算在幫「別的 repo」跑活，
+  # 也會顯示 🟢 忙碌 ← [repo] job，而不是誤判成閒置。閒置者則顯示本 PR 最近一次
+  # 接的 job。名冊 = 本 PR 出現過的 runner ∪ 現在正忙的 runner。
+  local ORG="${REPO%%/*}" busymap="" runners note=""
+  if [ "$LOCAL" = 0 ]; then
+    busymap=$(org_busy "$ORG")   # repo \t runner \t job \t dur
+    [ -n "$busymap" ] || note="（跨 repo 掃描：目前 org 沒有 runner 在跑任何 self-hosted job）"
+  else
+    note="（--local：僅依本 PR 觀察，未跨 repo 掃描）"
+  fi
+
+  # 兩路資料餵進同一個 awk：
+  #   B 行＝跨 repo 忙碌快照（busymap）：src=B repo runner job dur
+  #   P 行＝本 PR job（rows）：src=P runner epoch job hm（bucket 用不到）
+  runners=$(
+    { [ -n "$busymap" ] && awk -F'\t' '{print "B\t"$2"\t"$1"\t"$3"\t"$4}' <<<"$busymap"; }
+    awk -F'\t' 'NF>=8 && $5!="" && $5!="…待指派" && $5!="☁️ hosted" {print "P\t"$5"\t"$2"\t"$6"\t"$8}' <<<"$rows"
+  )
+  runners=$(awk -F'\t' '
+    $1=="B" { r=$2; seen[r]=1; busy[r]=1
+              b[r]=(b[r]=="" ? "" : b[r]" · ") "[" $3 "] " $4 " (" $5 ")" }
+    $1=="P" { r=$2; seen[r]=1
+              if (($3+0)>(late[r]+0)) { late[r]=$3; lj[r]=$4; lh[r]=$5 } }
+    END {
+      for (r in seen) {
+        if (busy[r]) printf "0\t%s\t🟢\t忙碌\t← %s\n", r, b[r]
+        else         printf "1\t%s\t⚪\t閒置\t最近：%s @ %s\n", r, (lj[r]==""?"—":lj[r]), (lh[r]==""?"—":lh[r])
+      }
+    }' <<<"$runners" | sort -t$'\t' -k1,1n -k2,2)
+
+  if [ -n "$runners" ]; then
+    printf '\n\033[1m🖥 Runner（%d 台在忙/曾接活）\033[0m' "$(wc -l <<<"$runners" | tr -d ' ')"
+    printf '  \033[2m完整名冊/離線狀態需 admin:org\033[0m\n'
+    awk -F'\t' '{printf "  %s %-22s %s  %s\n",$3,$2,$4,$5}' <<<"$runners"
+    [ -n "$note" ] && printf '  \033[2m%s\033[0m\n' "$note"
+  fi
+
+  # ── ▶ 進行中 / 排隊（bucket 0,1；最近活動在上）──────────────────────────
+  local active
+  active=$(awk -F'\t' '$1<=1' <<<"$rows" | sort -t$'\t' -k1,1n -k2,2nr)
+  if [ -n "$active" ]; then
+    printf '\n\033[33m▶ 進行中 / 排隊\033[0m\n'
+    awk -F'\t' '{printf "  %s  %s %-9s  %-22s  %-44s  %s\n",$8,$3,$4,$5,$6,$7}' <<<"$active"
+  fi
+
+  # ── ✓ 已完成（bucket 2；新→舊）──────────────────────────────────────────
+  local done_rows
+  done_rows=$(awk -F'\t' '$1==2' <<<"$rows" | sort -t$'\t' -k2,2nr)
+  if [ -n "$done_rows" ]; then
+    printf '\n\033[2m✓ 已完成（新→舊）\033[0m\n'
+    awk -F'\t' '{printf "  %s  %s %-9s  %-22s  %-44s  %s\n",$8,$3,$4,$5,$6,$7}' <<<"$done_rows"
+  fi
+
+  skew_note "$busymap" "$rows"
+
+  # 回傳「還有沒有進行中」給 --watch 判斷
+  [ "$n_run" -gt 0 ] || [ "$n_q" -gt 0 ]
+}
+
+# ── --runners：不綁 PR，只列/監控 runner 目前正在跑的工作（跨 org）──────────
+render_runners() {
+  # org 偵測（有序 fallback）：--repo owner[/name] > $PR_RUNNERS_ORG 環境變數 >
+  # 當前 git repo 的 owner。全部落空（例如在非 git repo 目錄且沒設任何來源）→ 明確報錯，
+  # 不讓 gh 吐 raw「not a git repository」。
+  local ORG=""
+  if [ -n "$REPO" ]; then ORG="${REPO%%/*}"
+  elif [ -n "${PR_RUNNERS_ORG:-}" ]; then ORG="$PR_RUNNERS_ORG"
+  else ORG=$(gh repo view --json owner --jq .owner.login 2>/dev/null) || ORG=""; fi
+  if [ -z "$ORG" ]; then
+    echo "無法判斷 org（你不在 git repo 內，也沒指定來源）。請擇一：" >&2
+    echo "  • pr-runners --runners --repo <org>        （例如 --repo my-org）" >&2
+    echo "  • export PR_RUNNERS_ORG=<org>              （之後任何目錄都能直接用）" >&2
+    exit 2
+  fi
+
+  local roster busymap
+  roster=$(org_roster "$ORG")   # name status busy labels（無 admin:org → 空）
+  busymap=$(org_busy "$ORG")    # repo runner job dur PR標籤
+
+  clear 2>/dev/null || true
+  printf '\033[1m🖥 Runner 目前工作\033[0m  org=\033[36m%s\033[0m  %s\n' "$ORG" "$(date '+%H:%M:%S')"
+
+  if [ -z "$roster" ]; then
+    # ── 退回：沒有 admin:org（runners API 403）→ 只能顯示「正在跑」的 runner ──
+    if [ -z "$busymap" ]; then
+      printf '  \033[2m目前沒有任何 self-hosted runner 在跑 job\033[0m\n'
+    else
+      awk -F'\t' '
+        { r=$2; job[r]=(job[r]==""?"":job[r]" · ") "[" $1 " " $5 "] " $3 " (" $4 ")"
+          n=$4; gsub(/m.*/,"",n); if((n+0)>max[r]) max[r]=n+0 }
+        END { for(r in job) printf "%d\t%s\t%s\n", max[r], r, job[r] }' <<<"$busymap" \
+      | sort -t$'\t' -k1,1nr | awk -F'\t' '{printf "  🟢 %-22s ← %s\n",$2,$3}'
+    fi
+    printf '  \033[2m只顯示「正在跑」的 runner；要看閒置/離線需授權：gh auth refresh -h github.com -s admin:org\033[0m\n'
+    skew_note "$busymap"
+    return
+  fi
+
+  # ── 完整名冊驅動：roster 決定「有哪些 runner + 在線/離線/忙碌」，busymap 補 job 細節 ──
+  # 兩路餵進同一個 awk：
+  #   R 行＝名冊：R name status busy labels
+  #   J 行＝忙碌 job 細節（來自 busymap）：J runner "[repo PR#N] job (dur)"
+  local merged
+  merged=$(
+    awk -F'\t' '{print "R\t"$1"\t"$2"\t"$3"\t"$4}' <<<"$roster"
+    if [ -n "$busymap" ]; then
+      awk -F'\t' '{print "J\t"$2"\t[" $1 " " $5 "] " $3 " (" $4 ")"}' <<<"$busymap"
+    fi
+    true   # 保證 command substitution 收尾 exit 0（否則 busymap 空時 set -e 會中止）
+  )
+  # 排序鍵：0=忙碌 1=閒置 2=離線；同組再依名稱。busy 但抓不到 job（工作在無法讀取的
+  # repo）仍標忙碌、註明。
+  merged=$(awk -F'\t' '
+    $1=="R" { n=$2; status[n]=$3; busy[n]=$4; seen[n]=1 }
+    $1=="J" { r=$2; job[r]=(job[r]==""?"":job[r]" · ") $3 }
+    END {
+      for (n in seen) {
+        if (status[n]=="offline")   printf "2\t🔴\t%s\t離線\n", n
+        else if (busy[n]=="true")   printf "0\t🟢\t%s\t%s\n", n, (job[n]!="" ? "← " job[n] : "← 忙碌中（工作在無法讀取的 repo）")
+        else                        printf "1\t⚪\t%s\t閒置\n", n
+      }
+    }' <<<"$merged" | sort -t$'\t' -k1,1 -k3,3)
+
+  local total busy_n idle_n off_n
+  total=$(wc -l <<<"$merged" | tr -d ' ')
+  busy_n=$(awk -F'\t' '$1==0' <<<"$merged" | grep -c . || true)
+  idle_n=$(awk -F'\t' '$1==1' <<<"$merged" | grep -c . || true)
+  off_n=$(awk  -F'\t' '$1==2' <<<"$merged" | grep -c . || true)
+  printf '\033[2m共 %s 台：🟢%s 忙碌  ⚪%s 閒置  🔴%s 離線\033[0m\n' "$total" "$busy_n" "$idle_n" "$off_n"
+  awk -F'\t' '{printf "  %s %-22s %s\n",$2,$3,$4}' <<<"$merged"
+  skew_note "$busymap"
+}
+
+if [ "$RUNNERS" = 1 ]; then
+  if [ "$WATCH" = 1 ]; then
+    printf '\033[2m監控中，每 %s 秒重刷；Ctrl-C 結束。（PR_RUNNERS_INTERVAL 可調）\033[0m\n' "$INTERVAL"; sleep 1
+    while true; do render_runners; sleep "$INTERVAL"; done
+  else
+    render_runners
+  fi
+elif [ "$WATCH" = 1 ]; then
+  while true; do
+    if render; then sleep "$INTERVAL"; else
+      printf '\n\033[32m全部跑完，沒有進行中的 job。\033[0m\n'; break
+    fi
+  done
+else
+  render || true
+fi

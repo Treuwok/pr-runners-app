@@ -1,0 +1,20 @@
+# Rust
+target/
+
+# 前端與 Tauri（Task 8 起使用）
+node_modules/
+app/dist/
+app/.svelte-kit/
+app/src-tauri/gen/schemas/
+
+# Android 建置產物（Task 11）
+app/src-tauri/gen/android/.gradle/
+app/src-tauri/gen/android/build/
+app/src-tauri/gen/android/app/build/
+app/src-tauri/gen/android/local.properties
+app/src-tauri/gen/android/**/.idea/
+
+.DS_Store
+
+# Playwright 截圖暫存
+.playwright-mcp/

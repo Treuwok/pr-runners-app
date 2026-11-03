@@ -1,0 +1,104 @@
+{
+  "total_count": 9,
+  "repositories": [
+    {
+      "id": 1220768903,
+      "name": "acme-app",
+      "full_name": "Acme/acme-app",
+      "private": true,
+      "owner": {
+        "login": "Acme",
+        "type": "Organization"
+      },
+      "pushed_at": null
+    },
+    {
+      "id": 1353399749,
+      "name": "runner-infra",
+      "full_name": "Acme/runner-infra",
+      "private": true,
+      "owner": {
+        "login": "Acme",
+        "type": "Organization"
+      },
+      "pushed_at": null
+    },
+    {
+      "id": 1072176049,
+      "name": "acme-story",
+      "full_name": "Acme/acme-story",
+      "private": true,
+      "owner": {
+        "login": "Acme",
+        "type": "Organization"
+      },
+      "pushed_at": null
+    },
+    {
+      "id": 1433530225,
+      "name": "acme-book",
+      "full_name": "Acme/acme-book",
+      "private": true,
+      "owner": {
+        "login": "Acme",
+        "type": "Organization"
+      },
+      "pushed_at": null
+    },
+    {
+      "id": 1345723686,
+      "name": "acme-paste",
+      "full_name": "Acme/acme-paste",
+      "private": true,
+      "owner": {
+        "login": "Acme",
+        "type": "Organization"
+      },
+      "pushed_at": null
+    },
+    {
+      "id": 1162466596,
+      "name": "acme-focus",
+      "full_name": "Acme/acme-focus",
+      "private": true,
+      "owner": {
+        "login": "Acme",
+        "type": "Organization"
+      },
+      "pushed_at": null
+    },
+    {
+      "id": 1116895685,
+      "name": "acme-web",
+      "full_name": "Acme/acme-web",
+      "private": true,
+      "owner": {
+        "login": "Acme",
+        "type": "Organization"
+      },
+      "pushed_at": null
+    },
+    {
+      "id": 1227433986,
+      "name": "acme-harness",
+      "full_name": "Acme/acme-harness",
+      "private": true,
+      "owner": {
+        "login": "Acme",
+        "type": "Organization"
+      },
+      "pushed_at": null
+    },
+    {
+      "id": 1388431278,
+      "name": "acme-api",
+      "full_name": "Acme/acme-api",
+      "private": true,
+      "owner": {
+        "login": "Acme",
+        "type": "Organization"
+      },
+      "pushed_at": null
+    }
+  ]
+}

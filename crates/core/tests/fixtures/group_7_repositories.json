@@ -1,0 +1,38 @@
+{
+  "total_count": 3,
+  "repositories": [
+    {
+      "id": 1220768903,
+      "name": "acme-app",
+      "full_name": "Acme/acme-app",
+      "private": true,
+      "owner": {
+        "login": "Acme",
+        "type": "Organization"
+      },
+      "pushed_at": null
+    },
+    {
+      "id": 1116895685,
+      "name": "acme-web",
+      "full_name": "Acme/acme-web",
+      "private": true,
+      "owner": {
+        "login": "Acme",
+        "type": "Organization"
+      },
+      "pushed_at": null
+    },
+    {
+      "id": 1388431278,
+      "name": "acme-api",
+      "full_name": "Acme/acme-api",
+      "private": true,
+      "owner": {
+        "login": "Acme",
+        "type": "Organization"
+      },
+      "pushed_at": null
+    }
+  ]
+}

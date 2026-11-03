@@ -1,0 +1,39 @@
+{
+  "total_count": 2,
+  "workflow_runs": [
+    {
+      "id": 1001,
+      "name": "ci",
+      "event": "pull_request",
+      "head_branch": "feat/x",
+      "head_sha": "e18a28b26706b254bb67aa40577a83c3403da89d",
+      "pull_requests": [
+        {
+          "number": 42
+        }
+      ],
+      "html_url": "https://github.com/Acme/pr-runners/actions/runs/1001",
+      "run_attempt": 1,
+      "status": "in_progress",
+      "repository": {
+        "full_name": "Acme/pr-runners",
+        "private": true
+      }
+    },
+    {
+      "id": 1002,
+      "name": "ci",
+      "event": "push",
+      "head_branch": "main",
+      "head_sha": "e18a28b26706b254bb67aa40577a83c3403da89d",
+      "pull_requests": [],
+      "html_url": "https://github.com/Acme/pr-runners/actions/runs/1002",
+      "run_attempt": 1,
+      "status": "in_progress",
+      "repository": {
+        "full_name": "Acme/pr-runners",
+        "private": true
+      }
+    }
+  ]
+}

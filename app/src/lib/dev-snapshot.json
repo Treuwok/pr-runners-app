@@ -1,0 +1,263 @@
+{
+  "schema_version": 1,
+  "generated_at": 1793620000,
+  "accounts": [
+    {
+      "account_id": 1,
+      "login": "jdoe",
+      "status": "Ok",
+      "scopes": [
+        {
+          "name": "Acme",
+          "kind": "Org",
+          "roster": "Full",
+          "runners": [
+            {
+              "key": "1/Acme/22",
+              "name": "mac-mini-1",
+              "os": "macOS",
+              "state": "Busy",
+              "labels": [
+                "self-hosted",
+                "macOS",
+                "ARM64"
+              ],
+              "group": "Default",
+              "job": {
+                "key": "11/1",
+                "repo": "Acme/acme-app",
+                "workflow": "app-ci",
+                "job": "device-e2e",
+                "state": "InProgress",
+                "labels": [
+                  "self-hosted",
+                  "macOS",
+                  "ARM64"
+                ],
+                "pr_tag": "PR#42",
+                "url": "https://github.com/Acme/acme-app/actions/runs/11",
+                "runner_name": "mac-mini-1",
+                "hosted": false,
+                "typical_secs": 1620
+              },
+              "elapsed": {
+                "Known": {
+                  "secs": 1860
+                }
+              },
+              "attention": false,
+              "can_take": "CanTakeBusy"
+            },
+            {
+              "key": "1/Acme/29",
+              "name": "vps-1",
+              "os": "Linux",
+              "state": "Busy",
+              "labels": [
+                "self-hosted",
+                "Linux",
+                "X64"
+              ],
+              "group": "Default",
+              "job": {
+                "key": "12/2",
+                "repo": "Acme/acme-api",
+                "workflow": "api-ci",
+                "job": "core",
+                "state": "InProgress",
+                "labels": [
+                  "self-hosted",
+                  "Linux",
+                  "X64"
+                ],
+                "pr_tag": "push:main←#9",
+                "url": "https://github.com/Acme/acme-api/actions/runs/12",
+                "runner_name": "vps-1",
+                "hosted": false,
+                "typical_secs": 1620
+              },
+              "elapsed": {
+                "Known": {
+                  "secs": 540
+                }
+              },
+              "attention": false,
+              "can_take": null
+            },
+            {
+              "key": "1/Acme/31",
+              "name": "vps-2",
+              "os": "Linux",
+              "state": {
+                "Offline": {
+                  "since": {
+                    "Observed": 1793619760
+                  }
+                }
+              },
+              "labels": [
+                "self-hosted",
+                "Linux",
+                "X64"
+              ],
+              "group": "Default",
+              "job": null,
+              "elapsed": null,
+              "attention": true,
+              "can_take": null
+            },
+            {
+              "key": "1/Acme/6",
+              "name": "linux-box-1",
+              "os": "Linux",
+              "state": "Idle",
+              "labels": [
+                "self-hosted",
+                "Linux",
+                "X64"
+              ],
+              "group": "shared-linux",
+              "job": null,
+              "elapsed": null,
+              "attention": false,
+              "can_take": null
+            },
+            {
+              "key": "1/Acme/30",
+              "name": "linux-box-1-light",
+              "os": "Linux",
+              "state": "Idle",
+              "labels": [
+                "self-hosted"
+              ],
+              "group": "ci-light",
+              "job": null,
+              "elapsed": null,
+              "attention": false,
+              "can_take": null
+            }
+          ],
+          "waiting": [
+            {
+              "job": {
+                "key": "13/3",
+                "repo": "Acme/acme-web",
+                "workflow": "Web CI",
+                "job": "mac build",
+                "state": "Queued",
+                "labels": [
+                  "self-hosted",
+                  "macOS",
+                  "ARM64"
+                ],
+                "pr_tag": "PR#17",
+                "url": "https://github.com/Acme/acme-web/actions/runs/13",
+                "runner_name": null,
+                "hosted": false,
+                "typical_secs": null
+              },
+              "age": {
+                "Known": {
+                  "secs": 720
+                }
+              },
+              "attention": true,
+              "candidates": [
+                {
+                  "runner_key": "1/Acme/22",
+                  "runner_name": "mac-mini-1",
+                  "kind": "CanTakeBusy"
+                }
+              ]
+            }
+          ],
+          "jobs": [
+            {
+              "key": "11/1",
+              "repo": "Acme/acme-app",
+              "workflow": "app-ci",
+              "job": "device-e2e",
+              "state": "InProgress",
+              "labels": [
+                "self-hosted",
+                "macOS",
+                "ARM64"
+              ],
+              "pr_tag": "PR#42",
+              "url": "https://github.com/Acme/acme-app/actions/runs/11",
+              "runner_name": "mac-mini-1",
+              "hosted": false,
+              "typical_secs": null
+            },
+            {
+              "key": "12/2",
+              "repo": "Acme/acme-api",
+              "workflow": "api-ci",
+              "job": "core",
+              "state": "InProgress",
+              "labels": [
+                "self-hosted",
+                "Linux",
+                "X64"
+              ],
+              "pr_tag": "push:main←#9",
+              "url": "https://github.com/Acme/acme-api/actions/runs/12",
+              "runner_name": "vps-1",
+              "hosted": false,
+              "typical_secs": null
+            },
+            {
+              "key": "13/3",
+              "repo": "Acme/acme-web",
+              "workflow": "Web CI",
+              "job": "mac build",
+              "state": "Queued",
+              "labels": [
+                "self-hosted",
+                "macOS",
+                "ARM64"
+              ],
+              "pr_tag": "PR#17",
+              "url": "https://github.com/Acme/acme-web/actions/runs/13",
+              "runner_name": null,
+              "hosted": false,
+              "typical_secs": null
+            },
+            {
+              "key": "14/4",
+              "repo": "Acme/acme-web",
+              "workflow": "Web CI",
+              "job": "lint",
+              "state": "InProgress",
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "pr_tag": "PR#17",
+              "url": "https://github.com/Acme/acme-web/actions/runs/14",
+              "runner_name": "GitHub Actions 3",
+              "hosted": true,
+              "typical_secs": null
+            }
+          ],
+          "last_updated_at": 1793620000
+        },
+        {
+          "name": "jdoe",
+          "kind": "User",
+          "roster": "Full",
+          "runners": [],
+          "waiting": [],
+          "jobs": [],
+          "last_updated_at": 1793620000
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "busy": 2,
+    "idle": 2,
+    "offline": 1,
+    "waiting": 1,
+    "attention": "Critical"
+  }
+}

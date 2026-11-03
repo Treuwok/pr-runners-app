@@ -1,0 +1,23 @@
+/* Android：Material 3 色彩角色與 Roboto；深淺兩套。色票取自 mockup 的手機部分。 */
+html.android{
+  --font:Roboto,"Noto Sans TC",sans-serif;--fs:16px;--fs-title:22px;--fs-name:17px;--name-col:auto;--lane-h:48px;--radius-lane:12px;
+  --bg:#FEF7FF;--surface:#F3EDF7;--fg:#1D1B20;--muted:#49454F;--hair:#CAC4D0;
+  --chip:#E8DEF8;--chip-fg:#1D1B20;--accent:#6750A4;--on-accent:#fff;
+  --green:#386A20;--orange:#B35C00;--red:#B3261E;--gray:#79747E;
+  --warn-bg:#FFDDB3;--warn-fg:#2B1700;--warn-muted:#5C3A00;--tag:#8A4500;--bad-text:#B3261E;--ok-text:#1E6B28;
+  --fill-ok:#C8EFC5;--fill-bad:#F9DEDC;--track:#E6E0E9;--run:#0B57D0;
+  --pad-bar:12px 16px 8px;--lead:14px;--gap:12px;--row-pad:10px 16px;--row-h:64px;
+  --radius-card:16px;--radius-btn:20px;--main-pad-bottom:88px;
+}
+@media (prefers-color-scheme:dark){
+  html.android{
+    --bg:#141218;--surface:#211F26;--fg:#E6E0E9;--muted:#CAC4D0;--hair:#49454F;
+    --chip:#4A4458;--chip-fg:#E6E0E9;--accent:#D0BCFF;--on-accent:#381E72;
+    --green:#9CF0A6;--orange:#FFB95C;--red:#FFB4AB;--gray:#CAC4D0;
+    --warn-bg:#4A2800;--warn-fg:#FFDDB3;--warn-muted:#F0C48A;--tag:#FFB95C;--bad-text:#FFB4AB;--ok-text:#9CF0A6;
+    --fill-ok:#0F5223;--fill-bad:#601410;--track:#36343B;--run:#A8C7FA;
+  }
+}
+html.android .app{padding-top:max(env(safe-area-inset-top),28px)}
+/* 手機上的連結要好點：至少 44px 高 */
+html.android .link{min-height:44px;padding:12px 0;display:inline-flex;align-items:center}

@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "app/src-tauri"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+ts-rs = "12"
+
+# Tauri App 的 release 設定（profile 只能放 workspace 根目錄）
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

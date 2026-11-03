@@ -1,0 +1,17 @@
+[package]
+name = "pr-runners-rules"
+description = "runner 監控的純規則：時間可信度、排隊對位、需要注意。無 I/O，可編 wasm32。"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# 開啟時，所有公開型別多一個 ts-rs 的 TS derive（供 core 匯出 TypeScript）。預設關閉。
+ts = ["dep:ts-rs"]
+
+[dependencies]
+serde.workspace = true
+ts-rs = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = "1"

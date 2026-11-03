@@ -1,0 +1,1 @@
+{"total_count":1,"runners":[{"id":30,"name":"linux-box-1-light","os":"Linux","status":"online","busy":false,"version":"2.338.0","labels":[{"id":0,"name":"self-hosted","type":"read-only"},{"id":0,"name":"Linux","type":"read-only"},{"id":0,"name":"X64","type":"read-only"},{"id":0,"name":"fast-task","type":"custom"},{"id":0,"name":"ci-light","type":"custom"}]}]}

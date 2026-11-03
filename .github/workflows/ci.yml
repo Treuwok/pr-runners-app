@@ -1,0 +1,91 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # labeled / unlabeled：聽得到 ci:hold 的貼與移。types 無法依標籤名過濾，
+    # 任何標籤變動都會觸發，由 hold job 依「目前標籤」重新判斷，不特別略過無關標籤。
+    # ready_for_review：hold 流程是先貼標籤再轉 ready，轉 ready 本身要起一個 run，
+    # 否則 ready 後看到的還是 draft 期的綠燈。
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  hold:
+    # 只讀事件 payload 裡的標籤，判斷這次是不是 hold。邏輯在 .github/scripts/ci-hold.sh。
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      held: ${{ steps.decide.outputs.held }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: decide
+        env:
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+        run: echo "held=$(bash .github/scripts/ci-hold.sh held)" >> "$GITHUB_OUTPUT"
+
+  test:
+    # 重活。ready 的 PR 貼著 ci:hold 時略過。
+    needs: hold
+    if: needs.hold.outputs.held != 'true'
+    # `make check`：shellcheck + bash 離線測試 + Rust（cargo test／clippy／rules 的 wasm32 建置）。
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - name: check
+        run: shellcheck --version && make check
+
+  windows:
+    # 重活：在 Windows 上建置前端並編譯、測試 App（Tauri 殼）與 core，確保 Windows 版沒被改壞。
+    # ready 的 PR 貼著 ci:hold 時略過（同 test）。
+    needs: hold
+    if: needs.hold.outputs.held != 'true'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      # App crate 的 generate_context! 需要前端產物，所以先建前端
+      - name: frontend
+        working-directory: app
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: test
+        run: cargo test -p pr-runners-core -p pr-runners-app
+      - name: clippy
+        run: cargo clippy -p pr-runners-app --all-targets -- -D warnings
+
+  check:
+    # 彙總檢查，名稱固定 `check`（日後設 branch protection 就選它）。永遠執行、不被標籤略過：
+    # hold 時失敗（訊息含 ci:hold），否則只在 test 與 windows 都是 success 時通過。
+    needs: [hold, test, windows]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v7
+      - name: gate
+        env:
+          HELD: ${{ needs.hold.outputs.held }}
+          # 兩個重活都 success 才算 success；否則把各自的結果交給 gate 印出來
+          TEST_RESULT: ${{ (needs.test.result == 'success' && needs.windows.result == 'success') && 'success' || format('test={0}, windows={1}', needs.test.result, needs.windows.result) }}
+        run: bash .github/scripts/ci-hold.sh gate

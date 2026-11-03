@@ -1,0 +1,3 @@
+{"total_count":1,"workflow_runs":[
+ {"id":111,"event":"pull_request","head_branch":"feat/x","head_sha":"abc123",
+  "head_repository":{"full_name":"acme/repo-x"},"pull_requests":[{"number":42}]}]}

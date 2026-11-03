@@ -1,0 +1,25 @@
+/* 桌面版（macOS 與 Windows 共用；字型另外分開）：系統字型、選單列／系統匣視窗風格；深淺色跟 prefers-color-scheme。*/
+html.mac,html.windows{
+  --font:-apple-system,"SF Pro Text","PingFang TC",sans-serif;--fs:15px;--fs-name:17px;
+  --bg:#F5F5F7;--surface:#FFFFFF;--fg:#1D1D1F;--muted:#6E6E73;--hair:rgba(0,0,0,.12);
+  --chip:rgba(0,0,0,.07);--chip-fg:#3A3A3C;--accent:#0A60D6;--on-accent:#fff;
+  --green:#34C759;--orange:#FF9F0A;--red:#FF3B30;--gray:#AEAEB2;
+  --warn-bg:rgba(255,159,10,.14);--warn-fg:#1D1D1F;--warn-muted:#6E6E73;--tag:#B23B00;--bad-text:#C4271D;--ok-text:#1E7B34;
+  --fill-ok:rgba(52,199,89,.30);--fill-bad:rgba(255,59,48,.18);--track:rgba(0,0,0,.07);--run:#0A6CDB;
+  --pad-bar:14px 16px 6px;
+}
+@media (prefers-color-scheme:dark){
+  html.mac,html.windows{
+    --bg:#1E1E20;--surface:#2A2A2D;--fg:#F5F5F7;--muted:#A1A1A6;--hair:rgba(255,255,255,.16);
+    --chip:rgba(255,255,255,.1);--chip-fg:#D1D1D6;--accent:#4F9BFF;--on-accent:#0B0B0C;
+    --warn-bg:rgba(255,159,10,.2);--warn-fg:#F5F5F7;--warn-muted:#C7B38F;--tag:#FFB454;--bad-text:#FF8A80;--ok-text:#30D158;
+    --fill-ok:rgba(52,199,89,.32);--fill-bad:rgba(255,69,58,.28);--track:rgba(255,255,255,.1);--run:#3D9BFF;
+  }
+}
+
+/* 背景不透明度（設定頁可調）：視窗本身是透明的，只有背景與卡片底色依 --win-alpha 變淡，文字不受影響 */
+html.mac,html.windows{background:transparent}
+html.mac body,html.windows body{background:color-mix(in srgb,var(--bg) calc(var(--win-alpha,1) * 100%),transparent)}
+html.mac,html.windows{--surface-a:color-mix(in srgb,var(--surface) calc(min(1,var(--win-alpha,1) + .1) * 100%),transparent)}
+/* Windows：系統字型（Segoe UI 搭配微軟正黑體顯示中文） */
+html.windows{--font:"Segoe UI Variable Text","Segoe UI","Microsoft JhengHei UI","Microsoft JhengHei",sans-serif}

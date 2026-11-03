@@ -1,0 +1,6 @@
+# ts-rs 12 的 `export_to` 相對於 TS_RS_EXPORT_DIR（預設 ./bindings），不是 crate 根目錄。
+# 統一在這裡設定；`relative = true` 讓路徑以 workspace 根目錄為基準，不受各 crate 測試工作目錄影響。
+# i64/u64 在 TS 一律宣告 number，對齊 serde JSON 傳輸（spec §8），不用 ts-rs 預設的 bigint。
+[env]
+TS_RS_EXPORT_DIR = { value = "app/src/lib/generated", relative = true }
+TS_RS_LARGE_INT = "number"

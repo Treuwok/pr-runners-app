@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- 範本預設是整個外部儲存空間（external-path "."）；本 App 沒有用到檔案分享，只留 App 自己的快取資料夾 -->
+  <cache-path name="cache" path="." />
+</paths>
