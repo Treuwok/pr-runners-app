@@ -1,13 +1,13 @@
 <script lang="ts">
-  // spec §4：用 GitHub 登入 → 8 碼代碼＋「打開 GitHub」→ 依 interval 輪詢 → （沒裝 App 就）安裝 → 勾選範圍。
+  // 用 GitHub 登入 → 代碼自動複製、自動打開 GitHub → 依 interval 輪詢 →（沒裝 App 就）自動打開安裝頁並等它裝好 → 直接進主畫面。
+  // 範圍預設全選，要改到設定頁；流程的判斷在 $lib/onboarding（有單元測試）。
   import { invoke } from "@tauri-apps/api/core";
   import Selftest from "$lib/components/Selftest.svelte";
   import type { AddedAccount } from "$lib/generated/AddedAccount";
   import type { DeviceCode } from "$lib/generated/DeviceCode";
   import type { LoginStatus } from "$lib/generated/LoginStatus";
-  import type { ScopeChoice } from "$lib/generated/ScopeChoice";
+  import { finishSetup, startDeviceLogin, waitForInstall, type OnboardingDeps } from "$lib/onboarding";
   import { openUrl } from "$lib/store.svelte";
-  import { defaultSelected } from "$lib/view";
 
   // oncancel：已經有帳號時（新增帳號、重新登入）才給，第一次登入沒有地方可以回去
   let {
@@ -16,16 +16,25 @@
     reauth = false,
   }: { ondone: () => void; oncancel?: () => void; reauth?: boolean } = $props();
 
-  type Step = "start" | "code" | "scopes" | "install" | "pat";
+  type Step = "start" | "code" | "install" | "pat";
   let step = $state<Step>("start");
   let code = $state<DeviceCode | null>(null);
+  let copied = $state(false);
   let message = $state("");
   let login = $state("");
   let accountId = $state<number | null>(null);
-  let choices = $state<ScopeChoice[]>([]);
   let pat = $state("");
   let busy = $state(false);
   let cancelled = false;
+  let watching = false;
+  /** 安裝頁已經自動打開過：按鈕改說「再打開一次」 */
+  let installOpened = $state(false);
+
+  const deps: OnboardingDeps = {
+    invoke,
+    openUrl,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  };
 
   /** 任何一步失敗都留在畫面上顯示原因，不讓使用者卡在沒有反應的畫面。 */
   async function guarded(f: () => Promise<void>) {
@@ -43,9 +52,18 @@
 
   const start = () =>
     guarded(async () => {
-      code = await invoke<DeviceCode>("login_start");
+      const started = await startDeviceLogin(deps);
+      code = started.code;
+      copied = started.copied;
+      if (started.openError) message = started.openError;
       step = "code";
-      void poll(code);
+      void poll(started.code);
+    });
+
+  const copyCode = () =>
+    guarded(async () => {
+      await invoke("copy_login_code");
+      copied = true;
     });
 
   async function poll(c: DeviceCode) {
@@ -74,13 +92,7 @@
       if (typeof status === "object" && "Done" in status) {
         login = status.Done.login;
         accountId = status.Done.account_id;
-        try {
-          await loadChoices();
-        } catch (e) {
-          // 帳號已經加進去了，只是讀不到可勾選的範圍：留在可重試的畫面
-          message = String(e);
-          step = "install";
-        }
+        await afterLogin(true);
         return;
       }
       message =
@@ -90,13 +102,46 @@
     }
   }
 
-  async function loadChoices() {
+  /**
+   * 帳號已加入：裝到了任何帳號或 org 就直接完成；還沒裝就到安裝畫面等。
+   * `openInstallPage`：GitHub App 登入時自動打開安裝頁（PAT 沒有「安裝」這回事）。
+   */
+  async function afterLogin(openInstallPage: boolean) {
     if (accountId === null) return;
-    choices = defaultSelected(await invoke<ScopeChoice[]>("list_scopes", { accountId }));
-    step = choices.length === 0 ? "install" : "scopes";
+    try {
+      if ((await finishSetup(deps, accountId)) === "done") {
+        ondone();
+        return;
+      }
+      step = "install";
+      if (openInstallPage) await openInstall();
+    } catch (e) {
+      // 帳號已經加進去了，只是讀不到可勾選的範圍：留在可重試的畫面
+      message = String(e);
+      step = "install";
+    }
+    if (openInstallPage) void watchInstall();
   }
 
-  const refresh = () => guarded(loadChoices);
+  async function watchInstall() {
+    if (watching || accountId === null) return;
+    watching = true;
+    const id = accountId;
+    const result = await waitForInstall(deps, id, () => cancelled || step !== "install");
+    watching = false;
+    if (result === "done") ondone();
+  }
+
+  async function openInstall() {
+    const failed = await openUrl(await invoke<string>("install_url"));
+    if (failed) message = failed;
+    else installOpened = true;
+  }
+
+  const refresh = () =>
+    guarded(async () => {
+      if (accountId !== null && (await finishSetup(deps, accountId)) === "done") ondone();
+    });
 
   const addPat = () =>
     guarded(async () => {
@@ -104,30 +149,7 @@
       login = added.login;
       accountId = added.account_id;
       pat = "";
-      try {
-        await loadChoices();
-      } catch (e) {
-        // 帳號已經加進去了，只是讀不到可勾選的範圍：和裝置登入一樣留在可重試的畫面
-        message = String(e);
-        step = "install";
-      }
-    });
-
-  const finish = () =>
-    guarded(async () => {
-      if (accountId !== null) {
-        await invoke("set_scopes", {
-          accountId,
-          selected: choices.filter((c) => c.selected).map((c) => c.name),
-        });
-      }
-      ondone();
-    });
-
-  const install = () =>
-    guarded(async () => {
-      const failed = await openUrl(await invoke<string>("install_url"));
-      if (failed) message = failed;
+      await afterLogin(false);
     });
 
   $effect(() => () => {
@@ -145,24 +167,19 @@
     <button class="primary" disabled={busy} onclick={start}>用 GitHub 登入</button>
     <button class="link" onclick={() => (step = "pat")}>改用 Personal Access Token</button>
   {:else if step === "code" && code}
-    <h1>輸入這組代碼</h1>
+    <h1>{copied ? "貼上代碼並授權" : "輸入這組代碼"}</h1>
     <p class="user-code" aria-label="驗證碼">{code.user_code}</p>
-    <button class="primary" onclick={() => openUrl(code!.verification_uri)}>打開 GitHub</button>
-    <p class="lead">在 GitHub 頁面貼上代碼並授權，這裡會自動繼續。</p>
+    <p class="lead">
+      {copied ? "代碼已複製。在剛打開的 GitHub 頁面貼上並按授權，這裡會自動繼續。" : "在 GitHub 頁面輸入這組代碼並按授權，這裡會自動繼續。"}
+    </p>
+    <button class="primary" onclick={() => openUrl(code!.verification_uri)}>再打開一次 GitHub</button>
+    <button class="link" disabled={busy} onclick={copyCode}>{copied ? "再複製一次代碼" : "複製代碼"}</button>
   {:else if step === "install"}
     <h1>安裝到你的帳號或 org</h1>
-    <p class="lead">已登入為 {login}，但這個 App 還沒裝到任何帳號或 org。</p>
-    <button class="primary" disabled={busy} onclick={install}>安裝到你的帳號或 org</button>
+    <p class="lead">已登入為 {login}。在 GitHub 的安裝頁選好帳號或 org 並按安裝，裝好這裡會自動繼續。</p>
+    <button class="primary" disabled={busy} onclick={() => guarded(openInstall)}>{installOpened ? "再打開一次安裝頁" : "打開安裝頁"}</button>
     <button class="link" disabled={busy} onclick={refresh}>重新整理</button>
     <button class="link" onclick={ondone}>先跳過</button>
-  {:else if step === "scopes"}
-    <h1>要看哪些範圍？</h1>
-    <ul class="choices">
-      {#each choices as c (c.name)}
-        <li><label><input type="checkbox" bind:checked={c.selected} /> {c.name}</label></li>
-      {/each}
-    </ul>
-    <button class="primary" disabled={busy} onclick={finish}>完成</button>
   {:else if step === "pat"}
     <h1>Personal Access Token</h1>
     <p class="lead">貼上唯讀的 fine-grained token（Actions、Administration、Metadata、Pull requests 的 Read）。</p>

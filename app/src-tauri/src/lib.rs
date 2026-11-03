@@ -61,7 +61,9 @@ fn build_collector(
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_os::init());
+        .plugin(tauri_plugin_os::init())
+        // 只給 Rust 端複製登入代碼用；capability 沒有授予前端任何 clipboard 權限
+        .plugin(tauri_plugin_clipboard_manager::init());
 
     builder
         .setup(|app| {
@@ -115,6 +117,7 @@ pub fn run() {
             commands::get_snapshot,
             commands::refresh_now,
             commands::login_start,
+            commands::copy_login_code,
             commands::login_poll,
             commands::list_scopes,
             commands::set_scopes,

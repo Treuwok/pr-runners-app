@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tauri::{Emitter, State};
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_opener::OpenerExt;
 use ts_rs::TS;
 
@@ -159,6 +160,20 @@ pub async fn login_start(state: AppState<'_>) -> Result<DeviceCode, String> {
     *state.pending_token.lock().expect("pending") = None;
     *state.pending_login.lock().expect("pending") = Some(code.clone());
     Ok(code)
+}
+
+/// 把進行中登入的代碼放進剪貼簿，使用者到 GitHub 頁面直接貼上。
+/// 只複製 `login_start` 拿到的那組代碼，前端不能藉這個指令寫入任意文字。
+#[tauri::command]
+pub fn copy_login_code(state: AppState<'_>, app: tauri::AppHandle) -> Result<(), String> {
+    let code = state
+        .pending_login
+        .lock()
+        .expect("pending")
+        .as_ref()
+        .map(|c| c.user_code.clone())
+        .ok_or("沒有進行中的登入")?;
+    app.clipboard().write_text(code).map_err(err)
 }
 
 #[tauri::command]
