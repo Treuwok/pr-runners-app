@@ -1,7 +1,9 @@
-{"total_count":3,"jobs":[
+{"total_count":4,"jobs":[
  {"status":"in_progress","conclusion":null,"labels":["self-hosted","linux"],"runner_name":"runner-a",
   "workflow_name":"CI","name":"build","created_at":"2026-01-01T00:00:00Z","started_at":"PLACEHOLDER","completed_at":null},
  {"status":"completed","conclusion":"success","labels":["ubuntu-latest"],"runner_name":"GitHub Actions 1",
   "workflow_name":"CI","name":"lint","created_at":"2026-01-01T00:00:00Z","started_at":"2026-01-01T00:00:10Z","completed_at":"2026-01-01T00:01:15Z"},
  {"status":"in_progress","conclusion":null,"labels":["blacksmith-8vcpu-ubuntu-2404"],"runner_name":"blacksmith-8vcpu-ubuntu-2404-abc",
-  "workflow_name":"CI","name":"integration","created_at":"2026-01-01T00:00:00Z","started_at":"2026-01-01T00:00:20Z","completed_at":null}]}
+  "workflow_name":"CI","name":"integration","created_at":"2026-01-01T00:00:00Z","started_at":"2026-01-01T00:00:20Z","completed_at":null},
+ {"status":"in_progress","conclusion":null,"labels":["self-hosted","blacksmith-8vcpu-ubuntu-2404"],"runner_name":"blacksmith-8vcpu-ubuntu-2404-def",
+  "workflow_name":"CI","name":"e2e","created_at":"2026-01-01T00:00:00Z","started_at":"2026-01-01T00:00:30Z","completed_at":null}]}

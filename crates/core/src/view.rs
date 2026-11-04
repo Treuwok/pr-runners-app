@@ -133,7 +133,9 @@ pub struct JobView {
     pub runner_name: Option<String>,
     /// 跑在 GitHub-hosted runner 上（不是自家，也不是 Blacksmith）
     pub hosted: bool,
-    /// 跑在 Blacksmith 的一次性 VM 上（ci-burst 溢出）：與自家 runner、GitHub-hosted 分開顯示
+    /// 跑在 Blacksmith 的一次性 VM 上（ci-burst 溢出）：與自家 runner、GitHub-hosted 分開顯示。
+    /// 預設 false：升級前存下的快照沒有這個欄位，照樣讀得進來（那時 Blacksmith job 還不會被分出來）。
+    #[serde(default)]
     pub blacksmith: bool,
     /// 同名 job 最近幾次成功平常跑多久（秒）；紀錄不足就是 null，畫面不預估
     pub typical_secs: Option<u64>,

@@ -11,7 +11,8 @@ labels: Array<string>, pr_tag: string, url: string, runner_name: string | null,
  */
 hosted: boolean, 
 /**
- * 跑在 Blacksmith 的一次性 VM 上（ci-burst 溢出）：與自家 runner、GitHub-hosted 分開顯示
+ * 跑在 Blacksmith 的一次性 VM 上（ci-burst 溢出）：與自家 runner、GitHub-hosted 分開顯示。
+ * 預設 false：升級前存下的快照沒有這個欄位，照樣讀得進來（那時 Blacksmith job 還不會被分出來）。
  */
 blacksmith: boolean, 
 /**

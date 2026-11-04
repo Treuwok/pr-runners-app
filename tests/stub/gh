@@ -3,6 +3,8 @@
 # 情境開關（環境變數）：
 #   STUB_START_OFFSET  in_progress job 的 started_at = now + 這個秒數（負＝過去、正＝未來）
 #   STUB_NO_ADMIN=1    orgs/*/actions/runners 回 403（模擬沒有 admin:org）
+#   STUB_ONLY_VMS=1    名冊讀得到，但只有 Blacksmith 的雲端 VM
+#   STUB_LOOKALIKE=1   名冊多一台名叫 blacksmith-builder 的自家 runner
 set -euo pipefail
 FX="$(cd "$(dirname "$0")/../fixtures" && pwd)"
 off="${STUB_START_OFFSET:--125}"
@@ -29,7 +31,15 @@ case "$path" in
     if [ "${STUB_NO_ADMIN:-0}" = 1 ]; then
       echo '{"message":"Must have admin rights to Repository.","status":"403"}'; exit 1
     fi
-    emit < "$FX/runners.json";;
+    if [ "${STUB_ONLY_VMS:-0}" = 1 ]; then
+      # 名冊讀得到，但裡面只有 Blacksmith 的雲端 VM（org 沒有自家 runner）
+      jq '.runners |= map(select(.name | startswith("blacksmith-")))' "$FX/runners.json" | emit
+    elif [ "${STUB_LOOKALIKE:-0}" = 1 ]; then
+      # 一台真的叫 blacksmith-builder 的自家 runner：名稱同前綴，但不是 Blacksmith 機型
+      jq '.runners += [{"name":"blacksmith-builder","status":"online","busy":false,"labels":[{"name":"self-hosted"}]}]' "$FX/runners.json" | emit
+    else
+      emit < "$FX/runners.json"
+    fi;;
   orgs/*/repos*) emit < "$FX/repos.json";;
   repos/*/actions/runs/*/jobs*)
     jq --arg off "$off" '(.jobs[] | select(.status=="in_progress") | .started_at) |= ((now + ($off|tonumber)) | floor | todate)' \

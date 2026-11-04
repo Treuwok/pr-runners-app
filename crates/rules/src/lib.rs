@@ -11,7 +11,8 @@ pub use attention::{
     QUEUE_LIMIT_SECS, RunnerObs, STALE_GAP_SECS, evaluate,
 };
 pub use matching::{
-    Candidate, CandidateKind, candidates, is_blacksmith, is_blacksmith_runner, needs_self_hosted,
+    Candidate, CandidateKind, candidates, is_blacksmith, is_blacksmith_machine,
+    is_blacksmith_runner, needs_self_hosted,
 };
 pub use model::{Elapsed, GroupAccess, JobFacts, JobState, RunnerFacts};
 pub use time::{elapsed, queued_age};

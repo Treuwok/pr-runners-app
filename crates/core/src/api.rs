@@ -177,6 +177,16 @@ struct RawRun {
     html_url: String,
 }
 
+/// 這個 job 是不是跑在 Blacksmith 的雲端 VM 上（標籤或 runner 名稱是 Blacksmith 機型命名）。
+fn runs_on_blacksmith(j: &RawJob) -> bool {
+    j.labels
+        .iter()
+        .any(|l| pr_runners_rules::is_blacksmith_machine(l))
+        || j.runner_name
+            .as_deref()
+            .is_some_and(pr_runners_rules::is_blacksmith_machine)
+}
+
 #[derive(Deserialize)]
 struct RawJob {
     id: u64,
@@ -515,6 +525,11 @@ pub async fn completed_job_durations(
         if j.conclusion.as_deref() != Some("success") {
             continue;
         }
+        // Blacksmith 的雲端 VM 跑得比自家機器快很多（機型由 ci-burst 決定）：不記進歷史，
+        // 不然同名 job 的「平常要跑多久」會被溢出期間的樣本拉偏，自家 runner 的預估跟著不準。
+        if runs_on_blacksmith(&j) {
+            continue;
+        }
         let (Some(start), Some(end)) = (j.started_at.as_deref(), j.completed_at.as_deref()) else {
             continue;
         };
@@ -709,4 +724,32 @@ pub async fn pr_tag(
             None => local_tag(run),
         }
     })
+}
+
+#[cfg(test)]
+mod blacksmith_history_tests {
+    use super::*;
+
+    fn raw(labels: &[&str], runner: Option<&str>) -> RawJob {
+        serde_json::from_value(serde_json::json!({
+            "id": 1, "run_id": 2, "name": "integration", "status": "completed",
+            "labels": labels, "runner_id": null, "runner_name": runner,
+            "runner_group_name": null, "created_at": "2026-01-01T00:00:00Z",
+            "started_at": "2026-01-01T00:00:10Z", "completed_at": "2026-01-01T00:01:10Z",
+            "conclusion": "success"
+        }))
+        .expect("a job in the shape GitHub returns")
+    }
+
+    #[test]
+    fn blacksmith_runs_are_kept_out_of_the_history() {
+        assert!(runs_on_blacksmith(&raw(&["blacksmith-8vcpu-ubuntu-2404"], None)));
+        assert!(runs_on_blacksmith(&raw(&[], Some("blacksmith-8vcpu-ubuntu-2404-abc"))));
+    }
+
+    #[test]
+    fn self_hosted_runs_still_count() {
+        assert!(!runs_on_blacksmith(&raw(&["self-hosted", "Linux"], Some("netcup-debian13-vps"))));
+        assert!(!runs_on_blacksmith(&raw(&["self-hosted", "blacksmith-cache"], Some("blacksmith-builder"))));
+    }
 }

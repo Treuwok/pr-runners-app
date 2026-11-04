@@ -50,6 +50,20 @@ expect_has "閒置 runner" "runner-b               閒置"
 expect_has "離線 runner" "runner-c               離線"
 expect_not "沒有時間偏移註記" '⚠\?'
 expect_not "Blacksmith 的雲端 VM（名冊裡離線）不算 runner" 'blacksmith-2vcpu'
+expect_not "同時帶 self-hosted 與 Blacksmith 機型標籤的 job 也不是自家 runner" 'blacksmith-8vcpu'
+
+echo "--runners：名冊裡只有 Blacksmith 的雲端 VM（不是缺權限）"
+STUB_ONLY_VMS=1 run --runners --repo acme
+expect_code "exit" 0
+expect_not "不把它誤報成缺 admin:org" 'admin:org'
+expect_has "統計是 0 台" "共 0 台"
+expect_not "VM 不被當成 runner 列出" 'blacksmith-2vcpu'
+
+echo "--runners：名稱同前綴的自家 runner 仍在名冊裡"
+STUB_LOOKALIKE=1 run --runners --repo acme
+expect_code "exit" 0
+expect_has "blacksmith-builder 是自家 runner，照常列出" "blacksmith-builder"
+expect_has "它也算進統計" "共 4 台"
 
 echo "--runners：GitHub 時間戳在未來（2026-11-01 實際發生）"
 STUB_START_OFFSET=3005 run --runners --repo acme
@@ -64,6 +78,7 @@ expect_code "exit" 0
 expect_has "退回只顯示忙碌" "🟢 runner-a"
 expect_has "授權提示" "gh auth refresh -h github.com -s admin:org"
 expect_not "不把 403 的 JSON 當成 runner 名" 'Must have admin'
+expect_not "忙碌清單（沒有名冊的路徑）也不列出 Blacksmith 的雲端 VM" 'blacksmith-8vcpu'
 
 echo "PR 檢視（--local）"
 STUB_START_OFFSET=-125 run 42 --repo acme/repo-x --local

@@ -206,7 +206,8 @@ fn job_view(e: &JobEntry) -> JobView {
         runner_name: f.runner_name.clone(),
         hosted: !needs_self_hosted(f) && !is_blacksmith(f),
         blacksmith: is_blacksmith(f),
-        typical_secs: e.typical_secs,
+        // Blacksmith 的 job 不預估：歷史只記自家 runner 的樣本，拿它預估雲端 VM 會誤導
+        typical_secs: if is_blacksmith(f) { None } else { e.typical_secs },
     }
 }
 
@@ -609,6 +610,34 @@ mod tests {
         let out = assemble(&input, &ObservationState::default(), &[], true);
         assert!(out.view.waiting.is_empty(), "不進自家的等待中，也不算排隊太久");
         assert!(out.view.jobs[0].blacksmith);
+    }
+
+    #[test]
+    fn blacksmith_job_gets_no_duration_estimate() {
+        let mut e = blacksmith_job(JobState::InProgress);
+        e.typical_secs = Some(600); // 自家 runner 的歷史樣本
+        let jobs = [e];
+        let input = ScopeInput {
+            account_id: 1,
+            name: "o",
+            kind: ScopeKind::Org,
+            roster: RosterLevel::Full,
+            runners: &[],
+            jobs: &jobs,
+            now: 100,
+        };
+        let out = assemble(&input, &ObservationState::default(), &[], true);
+        assert_eq!(out.view.jobs[0].typical_secs, None);
+    }
+
+    #[test]
+    fn a_job_view_saved_before_blacksmith_existed_still_loads() {
+        // 升級前存下的快照沒有 `blacksmith` 欄位：讀不進來就會被靜默丟掉，使用者離線時就看不到快取
+        let old = r#"{"key":"1/2","repo":"o/r","workflow":"ci","job":"t","state":"InProgress",
+            "labels":["self-hosted"],"pr_tag":"PR#1","url":"u","runner_name":"x","hosted":false,
+            "typical_secs":null}"#;
+        let j: JobView = serde_json::from_str(old).expect("an old snapshot still deserialises");
+        assert!(!j.blacksmith);
     }
 
     #[test]
