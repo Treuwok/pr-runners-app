@@ -49,6 +49,7 @@ expect_has "忙碌 runner 帶 repo/PR/job/時間" "runner-a               ← [r
 expect_has "閒置 runner" "runner-b               閒置"
 expect_has "離線 runner" "runner-c               離線"
 expect_not "沒有時間偏移註記" '⚠\?'
+expect_not "Blacksmith 的雲端 VM（名冊裡離線）不算 runner" 'blacksmith-2vcpu'
 
 echo "--runners：GitHub 時間戳在未來（2026-11-01 實際發生）"
 STUB_START_OFFSET=3005 run --runners --repo acme
@@ -71,6 +72,9 @@ expect_has "PR 標頭" "PR #42"
 expect_has "進行中區塊" "▶ 進行中 / 排隊"
 expect_has "self-hosted job 顯示 runner" "runner-a"
 expect_has "hosted job 標示" "☁️ hosted"
+expect_has "Blacksmith job 單獨標示" "☁ Blacksmith"
+expect_not "Blacksmith job 不進 runner 名冊" '(🟢|⚪) +blacksmith'
+expect_not "Blacksmith job 不被當成 hosted" 'integration.*hosted'
 expect_has "已完成 job 時間" "1m5s"
 
 echo "PR 檢視：時間戳在未來"

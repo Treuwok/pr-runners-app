@@ -131,7 +131,10 @@ pub struct JobView {
     pub pr_tag: String,
     pub url: String,
     pub runner_name: Option<String>,
+    /// 跑在 GitHub-hosted runner 上（不是自家，也不是 Blacksmith）
     pub hosted: bool,
+    /// 跑在 Blacksmith 的一次性 VM 上（ci-burst 溢出）：與自家 runner、GitHub-hosted 分開顯示
+    pub blacksmith: bool,
     /// 同名 job 最近幾次成功平常跑多久（秒）；紀錄不足就是 null，畫面不預估
     pub typical_secs: Option<u64>,
 }

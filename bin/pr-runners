@@ -178,7 +178,11 @@ org_roster() {
   # 這類文字當成 runner 名字渲染出來（比直接 exit 更難察覺的假資料）。
   # 只在成功時採用輸出；失敗一律回空 + exit 0，交給呼叫端的 fallback。
   out=$(gh api "orgs/$org/actions/runners" --paginate \
-    --jq '.runners[] | "\(.name)\t\(.status)\t\(.busy)\t\([.labels[].name]|join(","))"' 2>/dev/null) || return 0
+    --jq '.runners[]
+      | select((.name | ascii_downcase | startswith("blacksmith-")) | not)
+      | "\(.name)\t\(.status)\t\(.busy)\t\([.labels[].name]|join(","))"' 2>/dev/null) || return 0
+  # 上面濾掉 Blacksmith：ci-burst 溢出時雲端 VM 也會出現在 org 名冊，它們用完即丟、
+  # 不是自家 runner，留著會變成一排「離線的 runner」。它們的 job 在 PR 檢視另列為「☁ Blacksmith」。
   printf '%s' "$out"
 }
 
@@ -204,7 +208,10 @@ _run_rows() {
     (if $res=="success" then "✓" elif $res=="failure" then "✗"
      elif $res=="cancelled" then "⊘" elif $res=="skipped" then "–"
      elif $st=="in_progress" then "▶" else "…" end) as $icon |
-    (if ((.labels//[])|index("self-hosted"))
+    ((((.labels//[]) | map(ascii_downcase) | any(startswith("blacksmith-")))
+      or ((.runner_name // "") | ascii_downcase | startswith("blacksmith-")))) as $bs |
+    (if $bs then "☁ Blacksmith"
+     elif ((.labels//[])|index("self-hosted"))
      then (.runner_name // "…待指派") else "☁️ hosted" end) as $runner |
     (if (.started_at and .completed_at)
        then ((.completed_at|fromdateiso8601)-(.started_at|fromdateiso8601))
@@ -274,7 +281,7 @@ render() {
   #   P 行＝本 PR job（rows）：src=P runner epoch job hm（bucket 用不到）
   runners=$(
     { [ -n "$busymap" ] && awk -F'\t' '{print "B\t"$2"\t"$1"\t"$3"\t"$4}' <<<"$busymap"; }
-    awk -F'\t' 'NF>=8 && $5!="" && $5!="…待指派" && $5!="☁️ hosted" {print "P\t"$5"\t"$2"\t"$6"\t"$8}' <<<"$rows"
+    awk -F'\t' 'NF>=8 && $5!="" && $5!="…待指派" && $5!="☁️ hosted" && $5!="☁ Blacksmith" {print "P\t"$5"\t"$2"\t"$6"\t"$8}' <<<"$rows"
   )
   runners=$(awk -F'\t' '
     $1=="B" { r=$2; seen[r]=1; busy[r]=1

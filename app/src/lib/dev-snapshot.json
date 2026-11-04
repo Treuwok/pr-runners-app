@@ -38,6 +38,7 @@
                 "url": "https://github.com/Acme/acme-app/actions/runs/11",
                 "runner_name": "mac-mini-1",
                 "hosted": false,
+                "blacksmith": false,
                 "typical_secs": 1620
               },
               "elapsed": {
@@ -74,6 +75,7 @@
                 "url": "https://github.com/Acme/acme-api/actions/runs/12",
                 "runner_name": "vps-1",
                 "hosted": false,
+                "blacksmith": false,
                 "typical_secs": 1620
               },
               "elapsed": {
@@ -154,6 +156,7 @@
                 "url": "https://github.com/Acme/acme-web/actions/runs/13",
                 "runner_name": null,
                 "hosted": false,
+                "blacksmith": false,
                 "typical_secs": null
               },
               "age": {
@@ -187,6 +190,7 @@
               "url": "https://github.com/Acme/acme-app/actions/runs/11",
               "runner_name": "mac-mini-1",
               "hosted": false,
+              "blacksmith": false,
               "typical_secs": null
             },
             {
@@ -204,6 +208,7 @@
               "url": "https://github.com/Acme/acme-api/actions/runs/12",
               "runner_name": "vps-1",
               "hosted": false,
+              "blacksmith": false,
               "typical_secs": null
             },
             {
@@ -221,6 +226,7 @@
               "url": "https://github.com/Acme/acme-web/actions/runs/13",
               "runner_name": null,
               "hosted": false,
+              "blacksmith": false,
               "typical_secs": null
             },
             {
@@ -236,6 +242,7 @@
               "url": "https://github.com/Acme/acme-web/actions/runs/14",
               "runner_name": "GitHub Actions 3",
               "hosted": true,
+              "blacksmith": false,
               "typical_secs": null
             }
           ],

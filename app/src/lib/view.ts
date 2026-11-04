@@ -66,6 +66,16 @@ export function jobText(job: { repo: string; job: string }, dominant: string | n
   return repoName(job.repo) === dominant ? job.job : `${repoName(job.repo)} · ${job.job}`;
 }
 
+/**
+ * Jobs 頁上「這個 job 跑在哪」：Blacksmith（ci-burst 溢出的雲端 VM）、GitHub-hosted、自家 runner 三者分開顯示。
+ * Blacksmith 先判斷：它有 runner 名稱，不能被當成自家 runner。沒有可顯示的就是空字串。
+ */
+export function jobWhere(job: { blacksmith: boolean; hosted: boolean; runner_name: string | null }): string {
+  if (job.blacksmith) return "☁ Blacksmith";
+  if (job.hosted) return "GitHub-hosted";
+  return job.runner_name ?? "";
+}
+
 /** 泳道上的文字：忙碌＝正在跑的 job 名稱，其餘是狀態。`prefix` 是 repo 與頂端不同時才有的 repo 名（畫面上用較淡的字）。 */
 export function laneLabel(
   r: RunnerView,

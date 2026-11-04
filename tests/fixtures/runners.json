@@ -1,4 +1,5 @@
-{"total_count":3,"runners":[
+{"total_count":4,"runners":[
  {"name":"runner-a","status":"online","busy":true,"labels":[{"name":"self-hosted"},{"name":"linux"}]},
  {"name":"runner-b","status":"online","busy":false,"labels":[{"name":"self-hosted"},{"name":"linux"}]},
- {"name":"runner-c","status":"offline","busy":false,"labels":[{"name":"self-hosted"},{"name":"macOS"}]}]}
+ {"name":"runner-c","status":"offline","busy":false,"labels":[{"name":"self-hosted"},{"name":"macOS"}]},
+ {"name":"blacksmith-2vcpu-ubuntu-2404-56i2b5l67zytz24p","status":"offline","busy":false,"labels":[]}]}
