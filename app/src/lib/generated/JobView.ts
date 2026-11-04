@@ -5,7 +5,16 @@ export type JobView = { key: string, repo: string, workflow: string, job: string
 /**
  * 等待中區塊顯示「需要的 labels」（spec §5）
  */
-labels: Array<string>, pr_tag: string, url: string, runner_name: string | null, hosted: boolean, 
+labels: Array<string>, pr_tag: string, url: string, runner_name: string | null, 
+/**
+ * 跑在 GitHub-hosted runner 上（不是自家，也不是 Blacksmith）
+ */
+hosted: boolean, 
+/**
+ * 跑在 Blacksmith 的一次性 VM 上（ci-burst 溢出）：與自家 runner、GitHub-hosted 分開顯示。
+ * 預設 false：升級前存下的快照沒有這個欄位，照樣讀得進來（那時 Blacksmith job 還不會被分出來）。
+ */
+blacksmith: boolean, 
 /**
  * 同名 job 最近幾次成功平常跑多久（秒）；紀錄不足就是 null，畫面不預估
  */

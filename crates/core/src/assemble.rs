@@ -9,8 +9,8 @@ use crate::api::{JobInfo, RawRunner, ScopeKind};
 use crate::view::*;
 use pr_runners_rules::{
     Attention, AttentionEvent, Candidate, CandidateKind, GroupAccess, JobObs, JobState,
-    ObservationState, RunnerFacts, RunnerObs, candidates, elapsed, evaluate, needs_self_hosted,
-    queued_age,
+    ObservationState, RunnerFacts, RunnerObs, candidates, elapsed, evaluate, is_blacksmith,
+    is_blacksmith_runner, needs_self_hosted, queued_age,
 };
 use std::collections::BTreeMap;
 
@@ -204,8 +204,10 @@ fn job_view(e: &JobEntry) -> JobView {
         pr_tag: e.tag.clone(),
         url: e.job.html_url.clone(),
         runner_name: f.runner_name.clone(),
-        hosted: !needs_self_hosted(f),
-        typical_secs: e.typical_secs,
+        hosted: !needs_self_hosted(f) && !is_blacksmith(f),
+        blacksmith: is_blacksmith(f),
+        // Blacksmith 的 job 不預估：歷史只記自家 runner 的樣本，拿它預估雲端 VM 會誤導
+        typical_secs: if is_blacksmith(f) { None } else { e.typical_secs },
     }
 }
 
@@ -216,7 +218,14 @@ pub fn assemble(
     first_observation: bool,
 ) -> Assembled {
     let now = input.now;
-    let mut recs: Vec<RunnerRec> = input.runners.to_vec();
+    // Blacksmith 的 VM 會出現在 org 名冊（用完即丟的雲端機器）：不是自家 runner，
+    // 不然每台關掉的 VM 都會變成一列「離線的 runner」，還會觸發需要注意。
+    let mut recs: Vec<RunnerRec> = input
+        .runners
+        .iter()
+        .filter(|r| !is_blacksmith_runner(&r.facts))
+        .cloned()
+        .collect();
 
     // job → runner（只看進行中的 self-hosted job；hosted 的 `GitHub Actions 3` 不進名冊）
     let mut job_on: BTreeMap<usize, &JobEntry> = BTreeMap::new();
@@ -533,6 +542,118 @@ mod tests {
             r.elapsed,
             Some(pr_runners_rules::Elapsed::Known { secs: 90 })
         );
+    }
+
+    fn blacksmith_job(state: JobState) -> JobEntry {
+        let mut e = running("o/r", 5);
+        e.job.facts.key = "2/2".into();
+        e.job.facts.state = state;
+        e.job.facts.labels = vec!["blacksmith-8vcpu-ubuntu-2404".into()];
+        e.job.facts.runner_id = Some(900);
+        e.job.facts.runner_name = Some("blacksmith-8vcpu-ubuntu-2404-abc".into());
+        e
+    }
+
+    #[test]
+    fn blacksmith_vms_in_the_org_roster_are_not_runners() {
+        // 關掉的 Blacksmith VM 在名冊裡是 offline；不能變成「離線的 runner」或觸發 Critical
+        let mut vm = rec("o", 900, "blacksmith-2vcpu-ubuntu-2404-56i2b5l67zytz24p");
+        vm.facts.online = false;
+        vm.facts.labels = vec![];
+        let runners = [rec("o", 1, "netcup"), vm];
+        let input = ScopeInput {
+            account_id: 1,
+            name: "o",
+            kind: ScopeKind::Org,
+            roster: RosterLevel::Full,
+            runners: &runners,
+            jobs: &[],
+            now: 100,
+        };
+        let out = assemble(&input, &ObservationState::default(), &[], true);
+        let names: Vec<&str> = out.view.runners.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["netcup"]);
+    }
+
+    #[test]
+    fn running_blacksmith_job_adds_no_runner_row_and_is_marked() {
+        // 原本的缺口：已在跑、group 非空 → 補出一列假的忙碌 runner
+        let jobs = [blacksmith_job(JobState::InProgress)];
+        let input = ScopeInput {
+            account_id: 1,
+            name: "o",
+            kind: ScopeKind::Org,
+            roster: RosterLevel::Full,
+            runners: &[],
+            jobs: &jobs,
+            now: 100,
+        };
+        let out = assemble(&input, &ObservationState::default(), &[], true);
+        assert!(out.view.runners.is_empty(), "Blacksmith job 不補 runner 列");
+        let j = &out.view.jobs[0];
+        assert!(j.blacksmith && !j.hosted, "獨立一類：不是 hosted，也不是自家");
+    }
+
+    #[test]
+    fn queued_blacksmith_job_never_waits_on_the_fleet() {
+        let jobs = [blacksmith_job(JobState::Queued)];
+        let runners = [rec("o", 1, "netcup")];
+        let input = ScopeInput {
+            account_id: 1,
+            name: "o",
+            kind: ScopeKind::Org,
+            roster: RosterLevel::Full,
+            runners: &runners,
+            jobs: &jobs,
+            now: 100_000,
+        };
+        let out = assemble(&input, &ObservationState::default(), &[], true);
+        assert!(out.view.waiting.is_empty(), "不進自家的等待中，也不算排隊太久");
+        assert!(out.view.jobs[0].blacksmith);
+    }
+
+    #[test]
+    fn blacksmith_job_gets_no_duration_estimate() {
+        let mut e = blacksmith_job(JobState::InProgress);
+        e.typical_secs = Some(600); // 自家 runner 的歷史樣本
+        let jobs = [e];
+        let input = ScopeInput {
+            account_id: 1,
+            name: "o",
+            kind: ScopeKind::Org,
+            roster: RosterLevel::Full,
+            runners: &[],
+            jobs: &jobs,
+            now: 100,
+        };
+        let out = assemble(&input, &ObservationState::default(), &[], true);
+        assert_eq!(out.view.jobs[0].typical_secs, None);
+    }
+
+    #[test]
+    fn a_job_view_saved_before_blacksmith_existed_still_loads() {
+        // 升級前存下的快照沒有 `blacksmith` 欄位：讀不進來就會被靜默丟掉，使用者離線時就看不到快取
+        let old = r#"{"key":"1/2","repo":"o/r","workflow":"ci","job":"t","state":"InProgress",
+            "labels":["self-hosted"],"pr_tag":"PR#1","url":"u","runner_name":"x","hosted":false,
+            "typical_secs":null}"#;
+        let j: JobView = serde_json::from_str(old).expect("an old snapshot still deserialises");
+        assert!(!j.blacksmith);
+    }
+
+    #[test]
+    fn self_hosted_job_is_not_marked_blacksmith() {
+        let jobs = [running("o/r", 5)];
+        let input = ScopeInput {
+            account_id: 1,
+            name: "o",
+            kind: ScopeKind::Org,
+            roster: RosterLevel::Full,
+            runners: &[],
+            jobs: &jobs,
+            now: 100,
+        };
+        let out = assemble(&input, &ObservationState::default(), &[], true);
+        assert!(!out.view.jobs[0].blacksmith && !out.view.jobs[0].hosted);
     }
 
     #[test]

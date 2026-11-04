@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snapshot } from "$lib/generated/Snapshot";
   import { openUrl } from "$lib/store.svelte";
-  import { repoName } from "$lib/view";
+  import { jobWhere, repoName } from "$lib/view";
 
   let { snapshot }: { snapshot: Snapshot } = $props();
   // key 帶帳號：兩個帳號看同一個 org 時 job key 會重複
@@ -18,7 +18,7 @@
       <span class="n">{repoName(j.repo)} · {j.workflow} → {j.job}</span>
       <span class="j">
         {stateText[j.state]} · {j.pr_tag}
-        {#if j.hosted}· GitHub-hosted{:else if j.runner_name}· {j.runner_name}{/if}
+        {#if jobWhere(j)}· {jobWhere(j)}{/if}
       </span>
     </span>
   </button>

@@ -106,7 +106,10 @@ _scan_repo() {
         .jobs[]
         | select(.status=="in_progress"
                  and ((.labels//[])|index("self-hosted"))
-                 and .runner_name)
+                 and .runner_name
+                 # Blacksmith 的雲端 VM 不是自家 runner（機型命名 blacksmith-<N>vcpu-…）
+                 and ((((.labels//[]) | map(ascii_downcase) | any(test("^blacksmith-[0-9]+vcpu-")))
+                       or ((.runner_name // "") | ascii_downcase | test("^blacksmith-[0-9]+vcpu-"))) | not))
         | (if .started_at then (now-(.started_at|fromdateiso8601)) else 0 end) as $s
         # 負值＝GitHub 回的 started_at 在未來（GitHub 端時間戳偏移），算不出已跑多久，
         # 標 ⚠? 而不是印出 -51m-5s 這種誤導人的數字；呼叫端看到 ⚠? 會在底部加註。
@@ -204,7 +207,10 @@ _run_rows() {
     (if $res=="success" then "✓" elif $res=="failure" then "✗"
      elif $res=="cancelled" then "⊘" elif $res=="skipped" then "–"
      elif $st=="in_progress" then "▶" else "…" end) as $icon |
-    (if ((.labels//[])|index("self-hosted"))
+    ((((.labels//[]) | map(ascii_downcase) | any(test("^blacksmith-[0-9]+vcpu-")))
+      or ((.runner_name // "") | ascii_downcase | test("^blacksmith-[0-9]+vcpu-")))) as $bs |
+    (if $bs then "☁ Blacksmith"
+     elif ((.labels//[])|index("self-hosted"))
      then (.runner_name // "…待指派") else "☁️ hosted" end) as $runner |
     (if (.started_at and .completed_at)
        then ((.completed_at|fromdateiso8601)-(.started_at|fromdateiso8601))
@@ -274,7 +280,7 @@ render() {
   #   P 行＝本 PR job（rows）：src=P runner epoch job hm（bucket 用不到）
   runners=$(
     { [ -n "$busymap" ] && awk -F'\t' '{print "B\t"$2"\t"$1"\t"$3"\t"$4}' <<<"$busymap"; }
-    awk -F'\t' 'NF>=8 && $5!="" && $5!="…待指派" && $5!="☁️ hosted" {print "P\t"$5"\t"$2"\t"$6"\t"$8}' <<<"$rows"
+    awk -F'\t' 'NF>=8 && $5!="" && $5!="…待指派" && $5!="☁️ hosted" && $5!="☁ Blacksmith" {print "P\t"$5"\t"$2"\t"$6"\t"$8}' <<<"$rows"
   )
   runners=$(awk -F'\t' '
     $1=="B" { r=$2; seen[r]=1; busy[r]=1
@@ -356,13 +362,19 @@ render_runners() {
     return
   fi
 
+  # 名冊拿到了（所以不是缺權限）才濾掉 Blacksmith 的雲端 VM：ci-burst 溢出時它們也會出現在
+  # org 名冊（名稱 blacksmith-<N>vcpu-…），用完即丟、不是自家 runner，留著會變成一排「離線的
+  # runner」。先判斷空名冊、後過濾：一份只有 VM 的名冊是「沒有自家 runner」，不是 403。
+  # 它們的 job 在 PR 檢視另列為「☁ Blacksmith」。
+  roster=$(grep -viE '^blacksmith-[0-9]+vcpu-' <<<"$roster" || true)
+
   # ── 完整名冊驅動：roster 決定「有哪些 runner + 在線/離線/忙碌」，busymap 補 job 細節 ──
   # 兩路餵進同一個 awk：
   #   R 行＝名冊：R name status busy labels
   #   J 行＝忙碌 job 細節（來自 busymap）：J runner "[repo PR#N] job (dur)"
   local merged
   merged=$(
-    awk -F'\t' '{print "R\t"$1"\t"$2"\t"$3"\t"$4}' <<<"$roster"
+    awk -F'\t' '$1!="" {print "R\t"$1"\t"$2"\t"$3"\t"$4}' <<<"$roster"
     if [ -n "$busymap" ]; then
       awk -F'\t' '{print "J\t"$2"\t[" $1 " " $5 "] " $3 " (" $4 ")"}' <<<"$busymap"
     fi
@@ -382,12 +394,17 @@ render_runners() {
     }' <<<"$merged" | sort -t$'\t' -k1,1 -k3,3)
 
   local total busy_n idle_n off_n
-  total=$(wc -l <<<"$merged" | tr -d ' ')
+  # grep -c，不是 wc -l：空的 merged 經 here-string 是一行空字串，wc 會數成 1 台
+  total=$(grep -c . <<<"$merged" || true)
   busy_n=$(awk -F'\t' '$1==0' <<<"$merged" | grep -c . || true)
   idle_n=$(awk -F'\t' '$1==1' <<<"$merged" | grep -c . || true)
   off_n=$(awk  -F'\t' '$1==2' <<<"$merged" | grep -c . || true)
   printf '\033[2m共 %s 台：🟢%s 忙碌  ⚪%s 閒置  🔴%s 離線\033[0m\n' "$total" "$busy_n" "$idle_n" "$off_n"
-  awk -F'\t' '{printf "  %s %-22s %s\n",$2,$3,$4}' <<<"$merged"
+  if [ -n "$merged" ]; then
+    awk -F'\t' '{printf "  %s %-22s %s\n",$2,$3,$4}' <<<"$merged"
+  else
+    printf '  \033[2m目前沒有任何 self-hosted runner（名冊裡只有 Blacksmith 的雲端 VM）\033[0m\n'
+  fi
   skew_note "$busymap"
 }
 

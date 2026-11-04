@@ -28,6 +28,7 @@ import {
   fillPercent,
   groupQueue,
   jobText,
+  jobWhere,
   laneText,
   maxElapsedSecs,
   REPO_HUES,
@@ -65,6 +66,7 @@ const job = {
   url: "https://github.com/x",
   runner_name: "r",
   hosted: false,
+  blacksmith: false,
   typical_secs: null as number | null,
 };
 
@@ -418,5 +420,16 @@ describe("runner 執行歷史", () => {
     const snap = snapshotWith([runner({ key: "1/o/9", name: "builder" })]);
     expect(findRunner(snap, "1/o/9")).toMatchObject({ accountId: 1, scope: "o", runner: { name: "builder" } });
     expect(findRunner(snap, "nope")).toBeNull();
+  });
+});
+
+describe("jobWhere", () => {
+  it("Blacksmith、GitHub-hosted、自家 runner 三者分開，Blacksmith 先判斷", () => {
+    expect(jobWhere({ blacksmith: true, hosted: false, runner_name: "blacksmith-8vcpu-ubuntu-2404-abc" })).toBe("☁ Blacksmith");
+    expect(jobWhere({ blacksmith: false, hosted: true, runner_name: "GitHub Actions 3" })).toBe("GitHub-hosted");
+    expect(jobWhere({ blacksmith: false, hosted: false, runner_name: "netcup-debian13-vps" })).toBe("netcup-debian13-vps");
+  });
+  it("排隊中、還沒有 runner 名稱時不顯示", () => {
+    expect(jobWhere({ blacksmith: false, hosted: false, runner_name: null })).toBe("");
   });
 });

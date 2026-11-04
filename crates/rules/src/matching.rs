@@ -26,12 +26,58 @@ pub struct Candidate {
 
 const SELF_HOSTED: &str = "self-hosted";
 const HOSTED_GROUP: &str = "GitHub Actions";
+/// Blacksmith 的機型標籤與 VM 名稱都長這樣：`blacksmith-<N>vcpu-…`（例：`blacksmith-8vcpu-ubuntu-2404`、
+/// VM 名稱 `blacksmith-2vcpu-ubuntu-2404-<id>`）。只比 `blacksmith-` 前綴會太寬：一個不相干的
+/// `blacksmith-cache` 標籤，或一台真的叫 `blacksmith-builder` 的自家 runner，都不該被當成雲端 VM。
+const BLACKSMITH_PREFIX: &str = "blacksmith-";
+
+/// 一個標籤或 VM 名稱是不是 Blacksmith 的機型命名（`blacksmith-<N>vcpu-…`，不分大小寫）。
+pub fn is_blacksmith_machine(s: &str) -> bool {
+    // `get` 而不是 `s[..n]`：標籤與名稱是 GitHub 回來的任意字串，位元組位移落在多位元組字元
+    // 中間時切片會 panic，整個快照組裝就停了。
+    let Some(prefix) = s.get(..BLACKSMITH_PREFIX.len()) else {
+        return false;
+    };
+    if !prefix.eq_ignore_ascii_case(BLACKSMITH_PREFIX) {
+        return false;
+    }
+    // 前綴是 ASCII 且已比對相等，所以這個位移一定在字元邊界上。
+    let rest = &s[BLACKSMITH_PREFIX.len()..];
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    digits > 0
+        && rest[digits..]
+            .get(.."vcpu-".len())
+            .is_some_and(|p| p.eq_ignore_ascii_case("vcpu-"))
+}
+
+/// 這個 job 是不是跑在（或要跑在）Blacksmith 的一次性 VM 上。
+/// 看 labels（排隊時就看得到）與 runner 名稱（已在跑時）。Blacksmith 不是 GitHub-hosted、
+/// 也不是自家 runner：不進 self-hosted 名冊，不參與排隊對位，也不算排隊太久。
+pub fn is_blacksmith(job: &JobFacts) -> bool {
+    job.labels.iter().any(|l| is_blacksmith_machine(l))
+        || job
+            .runner_name
+            .as_deref()
+            .is_some_and(is_blacksmith_machine)
+}
+
+/// Blacksmith VM 也會出現在 org 的 runner 名冊（名稱 `blacksmith-…`、labels 常為空），
+/// 它們是用完即丟的雲端機器，不是自家 runner：不該被當成「離線的 runner」。
+pub fn is_blacksmith_runner(runner: &RunnerFacts) -> bool {
+    is_blacksmith_machine(&runner.name)
+}
 
 /// 這個 job 是不是跑在 self-hosted runner 上。
 /// - 跑在 `GitHub Actions` group 的一律不是（即使 labels 含 self-hosted）
 /// - labels 含 `self-hosted`（不分大小寫）是
 /// - 已在跑、且 group 名稱非空（又不是 hosted）也是；null／空字串不算證據
+/// - Blacksmith 的 job（`is_blacksmith`）一律不是
 pub fn needs_self_hosted(job: &JobFacts) -> bool {
+    // 先於其他規則：Blacksmith 上已在跑的 job 有非空的 runner group 名稱，會被下面
+    // 「已在跑、group 非空」那條誤判成自家 runner。
+    if is_blacksmith(job) {
+        return false;
+    }
     let group = job.runner_group_name.as_deref().unwrap_or("");
     if group == HOSTED_GROUP {
         return false;
@@ -173,6 +219,84 @@ mod tests {
     }
     fn all() -> GroupAccess {
         GroupAccess::All { public_ok: true }
+    }
+
+    fn runner_named(name: &str) -> RunnerFacts {
+        runner(name, true, false, &[], all())
+    }
+
+    #[test]
+    fn queued_blacksmith_job_is_not_self_hosted_and_has_no_candidates() {
+        let j = job(&["blacksmith-8vcpu-ubuntu-2404"], "o/r");
+        assert!(is_blacksmith(&j));
+        assert!(!needs_self_hosted(&j));
+        let r = runner("mini", true, false, &["self-hosted", "blacksmith-8vcpu-ubuntu-2404"], all());
+        assert!(candidates(&j, &[r]).is_empty(), "不參與排隊對位");
+    }
+
+    #[test]
+    fn running_blacksmith_job_with_a_group_name_is_not_self_hosted() {
+        // 這是原本的缺口：已在跑、group 非空 → 被當成自家 runner，補出一列假的忙碌 runner。
+        let mut j = job(&["blacksmith-8vcpu-ubuntu-2404"], "o/r");
+        j.state = JobState::InProgress;
+        j.runner_group_name = Some("Default".into());
+        j.runner_name = Some("blacksmith-8vcpu-ubuntu-2404-abc".into());
+        assert!(!needs_self_hosted(&j));
+    }
+
+    #[test]
+    fn blacksmith_is_recognised_from_the_runner_name_alone() {
+        let mut j = job(&[], "o/r");
+        j.state = JobState::InProgress;
+        j.runner_group_name = Some("Default".into());
+        j.runner_name = Some("Blacksmith-2vcpu-ubuntu-2404-xyz".into());
+        assert!(is_blacksmith(&j), "名稱不分大小寫");
+        assert!(!needs_self_hosted(&j));
+    }
+
+    #[test]
+    fn blacksmith_label_is_matched_case_insensitively() {
+        assert!(is_blacksmith(&job(&["Blacksmith-4vcpu-ubuntu-2404"], "o/r")));
+    }
+
+    #[test]
+    fn self_hosted_jobs_and_lookalikes_are_not_blacksmith() {
+        assert!(!is_blacksmith(&job(&["self-hosted", "Linux", "ci-burst-eligible"], "o/r")));
+        assert!(needs_self_hosted(&job(&["self-hosted", "ci-burst-eligible"], "o/r")));
+        // 只是名稱裡有 blacksmith 不算：必須是 `blacksmith-<N>vcpu-` 的機型命名
+        assert!(!is_blacksmith(&job(&["my-blacksmith-runner"], "o/r")));
+        assert!(!is_blacksmith(&job(&["black"], "o/r")), "比前綴短的標籤不會 panic");
+        // 同前綴但不是機型：一個自家 job 帶著不相干的標籤，仍是自家 job
+        let j = job(&["self-hosted", "blacksmith-cache"], "o/r");
+        assert!(!is_blacksmith(&j));
+        assert!(needs_self_hosted(&j));
+        assert!(!is_blacksmith(&job(&["blacksmith-vcpu-x"], "o/r")), "沒有數字不是機型");
+        assert!(!is_blacksmith(&job(&["blacksmith-8cpu-x"], "o/r")), "不是 vcpu 不是機型");
+    }
+
+    #[test]
+    fn non_ascii_labels_and_names_never_panic() {
+        // 位元組位移 11 落在多位元組字元中間：舊寫法 `s[..11]` 會 panic
+        let tricky = "ééééééé"; // 14 bytes, offset 11 is inside a character
+        assert!(!is_blacksmith(&job(&[tricky], "o/r")));
+        assert!(!is_blacksmith_runner(&runner_named(tricky)));
+        let mut j = job(&[], "o/r");
+        j.runner_name = Some("blacksmith-é".into());
+        assert!(!is_blacksmith(&j));
+        assert!(is_blacksmith(&job(&["blacksmith-8vcpu-é"], "o/r")), "機型前綴之後可以是任何字串");
+    }
+
+    #[test]
+    fn a_real_runner_that_merely_starts_with_blacksmith_stays_in_the_roster() {
+        assert!(!is_blacksmith_runner(&runner_named("blacksmith-builder")));
+        assert!(!is_blacksmith_runner(&runner("blacksmith-builder", true, false, &["self-hosted"], all())));
+    }
+
+    #[test]
+    fn blacksmith_vms_are_recognised_in_the_org_runner_roster() {
+        assert!(is_blacksmith_runner(&runner_named("blacksmith-2vcpu-ubuntu-2404-56i2b5l67zytz24p")));
+        assert!(!is_blacksmith_runner(&runner_named("netcup-debian13-vps")));
+        assert!(!is_blacksmith_runner(&runner_named("blacksmith")), "沒有連字號的名稱不是 VM");
     }
 
     #[test]
