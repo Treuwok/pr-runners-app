@@ -89,7 +89,11 @@ expect_has "self-hosted job 顯示 runner" "runner-a"
 expect_has "hosted job 標示" "☁️ hosted"
 expect_has "Blacksmith job 單獨標示" "☁ Blacksmith"
 expect_not "Blacksmith job 不進 runner 名冊" '(🟢|⚪) +blacksmith'
-expect_not "Blacksmith job 不被當成 hosted" 'integration.*hosted'
+# 只看 integration 那一列：全域比對會被另一個 Blacksmith job（e2e）湊巧滿足
+FULL_OUT="$OUT"; OUT=$(grep -F 'integration' <<<"$FULL_OUT" || true)
+expect_has "integration 那一列標的是 Blacksmith" "☁ Blacksmith"
+expect_not "integration 那一列不被當成 hosted" '☁️ hosted'
+OUT="$FULL_OUT"
 expect_has "已完成 job 時間" "1m5s"
 
 echo "PR 檢視：時間戳在未來"

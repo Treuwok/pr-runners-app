@@ -520,6 +520,11 @@ pub async fn completed_job_durations(
             Some("jobs"),
         )
         .await?;
+    durations_from_jobs(raw)
+}
+
+/// 一次執行裡的 job → 歷史樣本。純函式（不打 API），所以「哪些 job 不進歷史」可以直接測。
+fn durations_from_jobs(raw: Vec<RawJob>) -> Result<Vec<crate::history::Sample>, ApiError> {
     let mut out = Vec::new();
     for j in raw {
         if j.conclusion.as_deref() != Some("success") {
@@ -745,6 +750,20 @@ mod blacksmith_history_tests {
     fn blacksmith_runs_are_kept_out_of_the_history() {
         assert!(runs_on_blacksmith(&raw(&["blacksmith-8vcpu-ubuntu-2404"], None)));
         assert!(runs_on_blacksmith(&raw(&[], Some("blacksmith-8vcpu-ubuntu-2404-abc"))));
+    }
+
+    #[test]
+    fn durations_come_only_from_self_hosted_runs() {
+        // 同一個 job 在自家機器跑 60 秒、在 Blacksmith 跑 60 秒：只有自家那筆進歷史
+        let jobs = vec![
+            raw(&["self-hosted", "Linux"], Some("netcup-debian13-vps")),
+            raw(&["blacksmith-8vcpu-ubuntu-2404"], Some("blacksmith-8vcpu-ubuntu-2404-abc")),
+            raw(&[], Some("blacksmith-2vcpu-ubuntu-2404-xyz")),
+        ];
+        let samples = durations_from_jobs(jobs).expect("valid timestamps");
+        assert_eq!(samples.len(), 1, "Blacksmith 的樣本不能混進自家 runner 的預估");
+        assert_eq!(samples[0].runner.as_deref(), Some("netcup-debian13-vps"));
+        assert_eq!(samples[0].secs, 60);
     }
 
     #[test]
