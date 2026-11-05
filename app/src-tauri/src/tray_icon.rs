@@ -676,11 +676,44 @@ mod tests {
                     ..summary()
                 },
             ),
+            (
+                "five",
+                Summary {
+                    own_online: 5,
+                    own_busy: 2,
+                    ..summary()
+                },
+            ),
+            (
+                "ten",
+                Summary {
+                    own_online: 10,
+                    own_busy: 4,
+                    pool_busy: 2,
+                    waiting: 1,
+                    ..summary()
+                },
+            ),
+            (
+                "twenty",
+                Summary {
+                    own_online: 20,
+                    own_busy: 15,
+                    pool_busy: 9,
+                    waiting: 3,
+                    ..summary()
+                },
+            ),
         ];
         for (name, s) in &cases {
+            // 三種墨水在兩種底色上都輸出（包含「外觀讀錯」的失敗組合：淺色墨水畫在深底、深色墨水畫在淺底）
             for (bg, bg_name, inks) in [
-                ((245u8, 245u8, 247u8), "light", [Ink::Template, Ink::Light]),
-                ((38, 38, 40), "dark", [Ink::Template, Ink::Dark]),
+                (
+                    (245u8, 245u8, 247u8),
+                    "light",
+                    [Ink::Template, Ink::Light, Ink::Dark],
+                ),
+                ((38, 38, 40), "dark", [Ink::Template, Ink::Light, Ink::Dark]),
             ] {
                 for ink in inks {
                     let art = render_menubar(s, ink, 4.0);
