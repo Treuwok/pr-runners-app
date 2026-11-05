@@ -134,7 +134,7 @@ iOS 版與 Android 版的差別與限制：
 - token 存在 iOS 的 Data Protection 金鑰庫（`protected`）。**App 必須用 provisioning profile 簽章**，沒簽章會得到 `-34018`（缺少 entitlement）；token 不同步到 iCloud。
 - 進背景會被系統凍結，不能背景輪詢；回前景會立刻刷新（與 Android 相同）。
 - Bundle ID 是 `com.treuwok.prrunners`，要在你自己的 Apple Developer 帳號下註冊；TestFlight 需要付費的 Apple Developer Program。
-- 圖示目前還是 Tauri 預設的 logo（待換成 pr-runners 自己的圖示）。
+- App 圖示是 pr-runners 自己畫的（2×2 的 runner 格子，與選單列小圖同一個語彙）；只換了 iOS 的圖示，桌面與 Android 的圖示仍是 Tauri 預設 logo。
 - CI 不編 iOS（沒有 macOS runner）；改到 `crates/` 或 `app/src-tauri` 後，本機用 `cargo check -p pr-runners-app --target aarch64-apple-ios-sim` 確認 iOS 還編得過。
 
 Windows 版與 Mac 版的差別：
