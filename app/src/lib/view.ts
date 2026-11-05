@@ -145,7 +145,7 @@ export function etaText(x: Eta): string | null {
   return null;
 }
 
-export type QueueJob = { name: string; count: number; url: string | null; noMatch: boolean };
+export type QueueJob = { name: string; count: number; url: string | null; noMatch: boolean; wait: string };
 export type QueueGroup = {
   key: string;
   repo: string;
@@ -170,14 +170,15 @@ export function groupQueue(items: { w: WaitingView; roster: RosterLevel }[]): Qu
       g = { key, repo: w.job.repo, workflow: w.job.workflow, jobs: [], oldest: null, attention: false };
       groups.set(key, g);
     }
-    const noMatch = roster === "Full" && w.candidates.length === 0;
+    // 等臨時機器的 job 不對位自家 runner：「沒有 runner 能接」只對等自家機器的 job 成立
+    const noMatch = roster === "Full" && w.job.pool === null && w.candidates.length === 0;
     const same = g.jobs.find((j) => j.name === w.job.job);
     if (same) {
       same.count += 1;
       same.url = null;
       same.noMatch ||= noMatch;
     } else {
-      g.jobs.push({ name: w.job.job, count: 1, url: w.job.url, noMatch });
+      g.jobs.push({ name: w.job.job, count: 1, url: w.job.url, noMatch, wait: waitLabel(w.job) });
     }
     if (g.oldest === null || knownSecs(w.age) > knownSecs(g.oldest)) g.oldest = w.age;
     g.attention ||= w.attention;

@@ -498,4 +498,21 @@ describe("waitLabel", () => {
     expect(waitLabel({ ...job, pool: { stem: "pool", name: "pool", machine: "" } })).toBe("等 pool");
     expect(waitLabel({ ...job, pool: null })).toBe("等自家機器");
   });
+  it("groupQueue：等臨時機器的 job 不算「沒有 runner 能接」，並帶上等什麼", () => {
+    const pooled: WaitingView = {
+      job: { ...job, state: "Queued", pool: POOL, job: "e2e", workflow: "ci", key: "p/1" },
+      age: { Known: { secs: 700 } },
+      attention: true,
+      candidates: [],
+    };
+    const own: WaitingView = { ...pooled, job: { ...pooled.job, pool: null, job: "mac", key: "p/2" } };
+    const [g] = groupQueue([
+      { w: pooled, roster: "Full" },
+      { w: own, roster: "Full" },
+    ]);
+    expect(g.jobs.map((j) => [j.name, j.noMatch, j.wait])).toEqual([
+      ["e2e", false, "等 pool 8x-linux"],
+      ["mac", true, "等自家機器"],
+    ]);
+  });
 });

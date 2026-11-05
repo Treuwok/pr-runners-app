@@ -27,12 +27,12 @@
         {#each g.jobs as j (j.name)}
           {#if j.url}
             <button class="qj" onclick={() => openUrl(j.url!)}>
-              <span>{j.name}</span>
+              <span>{j.name} <span class="x">{j.wait}</span></span>
               {#if j.noMatch}<span class="tagwarn">{NO_MATCH}</span>{/if}
             </button>
           {:else}
             <div class="qj">
-              <span>{j.name} <span class="x">×{j.count}</span></span>
+              <span>{j.name} <span class="x">×{j.count} · {j.wait}</span></span>
               {#if j.noMatch}<span class="tagwarn">{NO_MATCH}</span>{/if}
             </div>
           {/if}
