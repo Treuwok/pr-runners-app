@@ -126,6 +126,13 @@ expect_not "integration 那一列不被當成 hosted" '☁️ hosted'
 OUT="$FULL_OUT"
 expect_has "已完成 job 時間" "1m5s"
 
+echo "PR 檢視（跨 repo 掃描）：臨時機器不進 runner 名冊"
+STUB_START_OFFSET=-125 run 42 --repo acme/repo-x
+expect_code "跨 repo 模式 exit" 0
+expect_has "自家 runner 照常列出" "runner-a"
+expect_not "亂數 runner 名稱不出現（忙碌快照那條路徑）" 'q7k2m9x4b1c8d3e5|z8y7x6w5v4u3t2s1'
+expect_not "臨時機器不被列成 runner" '(🟢|⚪) +pool'
+
 echo "PR 檢視：時間戳在未來"
 STUB_START_OFFSET=3005 run 42 --repo acme/repo-x --local
 expect_has "進行中 job 標 ⚠?" "⚠?"
