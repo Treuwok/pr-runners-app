@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import dev from "./dev-snapshot.json";
 import type { AccountView } from "./generated/AccountView";
+import type { JobView } from "./generated/JobView";
 import type { RunnerView } from "./generated/RunnerView";
 import type { Snapshot } from "./generated/Snapshot";
 import type { JobRecord } from "./generated/JobRecord";
 import type { WaitingView } from "./generated/WaitingView";
 import type { Summary } from "./generated/Summary";
 import {
+  splitRunners,
+  waitLabel,
   accountNote,
   dotFor,
   formatClock,
@@ -444,5 +447,55 @@ describe("jobWhere", () => {
   });
   it("排隊中、還沒有 runner 名稱時不顯示", () => {
     expect(jobWhere({ pool: null, hosted: false, runner_name: null })).toBe("");
+  });
+});
+
+describe("splitRunners", () => {
+  const poolJob = (name: string, over: Partial<JobView> = {}): JobView => ({ ...job, job: name, pool: POOL, hosted: false, ...over });
+  const elapsed = (secs: number) => ({ Known: { secs } });
+  const OFF = { Offline: { since: "Unknown" as const } };
+  it("自家機器依狀態分三堆（依名稱排序）；臨時機器歸組、離線殘骸完全丟掉", () => {
+    const rs = [
+      runner({ name: "own-busy-b", state: "Busy" }),
+      runner({ name: "own-busy-a", state: "Busy" }),
+      runner({ name: "own-idle", state: "Idle" }),
+      runner({ name: "own-off", state: OFF }),
+      runner({ name: "pool-1", state: "Busy", pool: POOL, job: poolJob("build"), elapsed: elapsed(60) }),
+      runner({ name: "pool-2", state: "Busy", pool: POOL, job: poolJob("build"), elapsed: elapsed(300) }),
+      runner({ name: "pool-3", state: "Idle", pool: POOL }),
+      runner({ name: "pool-4", state: OFF, pool: POOL }),
+      // 另一組：只剩離線殘骸 → 整組不出現
+      runner({ name: "gone-1", state: OFF, pool: { stem: "gone-2x", name: "gone", machine: "2x" } }),
+    ];
+    const s = splitRunners(rs);
+    expect(s.busy.map((r) => r.name)).toEqual(["own-busy-a", "own-busy-b"]);
+    expect(s.idle.map((r) => r.name)).toEqual(["own-idle"]);
+    expect(s.offline.map((r) => r.name)).toEqual(["own-off"]);
+    expect(s.pools).toHaveLength(1);
+    expect(s.pools[0]).toMatchObject({ tag: POOL, busy: 2, idle: 1 });
+  });
+  it("同 repo＋job 名稱合併成 count，elapsed 取最久的；只有一個時才有連結", () => {
+    const rs = [1, 2, 3].map((i) =>
+      runner({ name: `p${i}`, state: "Busy", pool: POOL, job: poolJob("build"), elapsed: elapsed(i * 100) }),
+    ).concat([
+      runner({ name: "p4", state: "Busy", pool: POOL, job: poolJob("lint", { url: "https://github.com/lint" }), elapsed: elapsed(30) }),
+    ]);
+    const [g] = splitRunners(rs).pools;
+    expect(g.jobs.map((j) => [j.job.job, j.count, j.url])).toEqual([
+      ["build", 3, null],
+      ["lint", 1, "https://github.com/lint"],
+    ]);
+    expect(g.jobs[0].elapsed).toEqual(elapsed(300));
+  });
+  it("沒有任何機器", () => {
+    expect(splitRunners([])).toEqual({ busy: [], idle: [], offline: [], pools: [] });
+  });
+});
+
+describe("waitLabel", () => {
+  it("等臨時機器：組名＋機型；機型空時只寫組名；否則等自家機器", () => {
+    expect(waitLabel({ ...job, pool: POOL })).toBe("等 pool 8x-linux");
+    expect(waitLabel({ ...job, pool: { stem: "pool", name: "pool", machine: "" } })).toBe("等 pool");
+    expect(waitLabel({ ...job, pool: null })).toBe("等自家機器");
   });
 });

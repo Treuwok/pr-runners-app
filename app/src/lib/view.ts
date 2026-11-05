@@ -4,6 +4,7 @@ import type { AccountStatus } from "./generated/AccountStatus";
 import type { CandidateKind } from "./generated/CandidateKind";
 import type { Elapsed } from "./generated/Elapsed";
 import type { JobOutcome } from "./generated/JobOutcome";
+import type { JobView } from "./generated/JobView";
 import type { PoolTag } from "./generated/PoolTag";
 import type { BackfillReport } from "./generated/BackfillReport";
 import type { JobRecord } from "./generated/JobRecord";
@@ -209,6 +210,58 @@ export function hasSkew(snap: Snapshot): boolean {
         s.waiting.some((w) => w.age === "Untrusted"),
     ),
   );
+}
+
+export type PoolJob = { job: JobView; count: number; url: string | null; elapsed: Elapsed | null };
+export type PoolGroup = { tag: PoolTag; busy: number; idle: number; jobs: PoolJob[] };
+
+const byName = (a: RunnerView, b: RunnerView) => a.name.localeCompare(b.name);
+
+/**
+ * 把一個範圍的 runner 分成：自家機器的忙碌／閒置／離線（各依名稱排序），以及臨時機器的組。
+ * 臨時機器只列有在線機器的組，離線殘骸完全丟掉；組內 job 依 repo＋job 名稱合併（elapsed 取最久的，只有一個時才附連結）。
+ */
+export function splitRunners(rs: RunnerView[]): {
+  busy: RunnerView[];
+  idle: RunnerView[];
+  offline: RunnerView[];
+  pools: PoolGroup[];
+} {
+  const own = rs.filter((r) => !r.pool);
+  const groups = new Map<string, PoolGroup>();
+  for (const r of rs) {
+    if (!r.pool || typeof r.state === "object") continue;
+    let g = groups.get(r.pool.stem);
+    if (!g) {
+      g = { tag: r.pool, busy: 0, idle: 0, jobs: [] };
+      groups.set(r.pool.stem, g);
+    }
+    if (r.state === "Idle") {
+      g.idle += 1;
+      continue;
+    }
+    g.busy += 1;
+    if (!r.job) continue;
+    const same = g.jobs.find((j) => j.job.repo === r.job!.repo && j.job.job === r.job!.job);
+    if (same) {
+      same.count += 1;
+      same.url = null;
+      if (knownSecs(r.elapsed) > knownSecs(same.elapsed)) same.elapsed = r.elapsed;
+    } else {
+      g.jobs.push({ job: r.job, count: 1, url: r.job.url || null, elapsed: r.elapsed });
+    }
+  }
+  return {
+    busy: own.filter((r) => r.state === "Busy").sort(byName),
+    idle: own.filter((r) => r.state === "Idle").sort(byName),
+    offline: own.filter((r) => typeof r.state === "object").sort(byName),
+    pools: [...groups.values()].sort((a, b) => a.tag.stem.localeCompare(b.tag.stem)),
+  };
+}
+
+/** 排隊中的 job 在等什麼：臨時機器的組（組名＋機型），或自家機器。 */
+export function waitLabel(job: JobView): string {
+  return job.pool ? `等 ${poolLabel(job.pool)}` : "等自家機器";
 }
 
 /** 頂端計數：從「目前畫面上看得到的」runner 與排隊算，選了單一範圍時數字才會跟清單一致。離線的臨時機器殘骸不計。 */
