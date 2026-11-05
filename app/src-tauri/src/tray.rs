@@ -160,8 +160,16 @@ mod desktop {
     }
 
     /// 最近一次收到的 `Summary` 與畫出去時用的墨水：選單列深淺改變時要用同一份資料重畫。
-    static LAST_SUMMARY: std::sync::Mutex<Option<Summary>> = std::sync::Mutex::new(None);
-    static LAST_INK: std::sync::Mutex<Option<Ink>> = std::sync::Mutex::new(None);
+    /// 一把鎖罩住「選墨水＋畫圖＋記下結果」整段：poller 的 `update` 與外觀執行緒的重畫不會交錯，
+    /// 舊的 Summary 不會蓋掉剛畫好的新圖示。
+    struct TrayState {
+        summary: Option<Summary>,
+        ink: Option<Ink>,
+    }
+    static TRAY_STATE: std::sync::Mutex<TrayState> = std::sync::Mutex::new(TrayState {
+        summary: None,
+        ink: None,
+    });
 
     /// macOS：讀選單列圖示按鈕自己的外觀（不是 App 主題：新版 macOS 的選單列會依桌布變深變淺）。
     /// 回傳外觀名稱（例如 `NSAppearanceNameDarkAqua`）；讀不到就是 `None`。
@@ -231,7 +239,6 @@ mod desktop {
         // 數字都畫進圖裡了，不再用 set_title 放文字
         let _ = tray.set_title(None::<String>);
         let _ = tray.set_tooltip(Some(tray_tooltip(s)));
-        *LAST_INK.lock().expect("last ink") = Some(ink);
     }
 
     /// 選單列深淺改變（切換深淺色、換桌布）時重畫。只有橘色狀態（依外觀畫黑或白）才會受影響，
@@ -241,15 +248,17 @@ mod desktop {
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(2));
-                let Some(s) = LAST_SUMMARY.lock().expect("last summary").clone() else {
+                let mut st = TRAY_STATE.lock().expect("tray state");
+                let Some(s) = st.summary.clone() else {
                     continue;
                 };
                 if s.attention != Severity::Warn {
                     continue;
                 }
                 let ink = ink_for(&app, &s);
-                if *LAST_INK.lock().expect("last ink") != Some(ink) {
+                if st.ink != Some(ink) {
                     apply(&app, &s, ink);
+                    st.ink = Some(ink);
                 }
             }
         });
@@ -434,8 +443,11 @@ mod desktop {
 
     /// 每次收到 snapshot：重畫圖示、更新 tooltip。
     pub fn update(app: &AppHandle, summary: &Summary) {
-        *LAST_SUMMARY.lock().expect("last summary") = Some(summary.clone());
-        apply(app, summary, ink_for(app, summary));
+        let mut st = TRAY_STATE.lock().expect("tray state");
+        st.summary = Some(summary.clone());
+        let ink = ink_for(app, summary);
+        apply(app, summary, ink);
+        st.ink = Some(ink);
     }
 
     /// 顯示主視窗並切到指定頁：`settings` 為 true 是設定頁，否則是 Runners（不帶篩選）。

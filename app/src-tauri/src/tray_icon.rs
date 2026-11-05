@@ -18,6 +18,8 @@ pub const WARN_RGB: (u8, u8, u8) = (0xFF, 0x9F, 0x0A);
 const MAX_CELLS: u32 = 6;
 const BAR_HEIGHT_PT: f32 = 18.0;
 const STALE_ALPHA: f32 = 0.5;
+/// 圖的寬度上限（點）。逐格模式搭配 +N 與排隊小牌放不下時，格子改成比例條。
+const MAX_WIDTH_PT: f32 = 120.0;
 
 /// 怎麼上色。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,9 +302,20 @@ pub fn render_menubar(s: &Summary, ink: Ink, scale: f32) -> TrayArt {
         }
     }
     let pad = scale;
-    let total: f32 = items.iter().map(|i| lay.width_of(i)).sum::<f32>()
-        + lay.gap() * items.len().saturating_sub(1) as f32
-        + 2.0 * pad;
+    let total_of = |items: &[Item]| -> f32 {
+        items.iter().map(|i| lay.width_of(i)).sum::<f32>()
+            + lay.gap() * items.len().saturating_sub(1) as f32
+            + 2.0 * pad
+    };
+    // 逐格放不下（例如 6 格＋「+10」＋兩位數排隊）：格子改成比例條，不裁切右邊的排隊資訊
+    if total_of(&items) > MAX_WIDTH_PT * scale {
+        for item in &mut items {
+            if let Item::Cells { online, busy } = *item {
+                *item = Item::Bar { busy, online };
+            }
+        }
+    }
+    let total = total_of(&items);
     // 只有一個空心格（沒有 runner）：做成正方形，格子置中
     let lone_cell = matches!(items.as_slice(), [Item::Placeholder]);
     let width = if lone_cell {
@@ -527,25 +540,51 @@ mod tests {
 
     #[test]
     fn two_digit_counts_stay_within_120pt() {
-        let big = Summary {
-            own_online: 12,
-            own_busy: 11,
-            pool_busy: 10,
-            waiting: 12,
-            attention: Severity::Warn,
-            ..summary()
-        };
-        for ink in [Ink::Template, Ink::Light, Ink::Dark] {
-            for scale in [1.0, 2.0] {
-                let a = render_menubar(&big, ink, scale);
-                assert!(
-                    a.width as f32 <= 120.0 * scale,
-                    "{} > {}",
-                    a.width,
-                    120.0 * scale
-                );
+        // 逐格模式（≤ 6 台）搭配兩位數的臨時機器與排隊：本來會超過 120pt，要改用比例條而不是裁切
+        let cases = [
+            (12, 11, 10, 12),
+            (6, 6, 10, 12),
+            (6, 3, 99, 99),
+            (7, 7, 99, 150),
+            (6, 6, 0, 0),
+        ];
+        for (own_online, own_busy, pool_busy, waiting) in cases {
+            let s = Summary {
+                own_online,
+                own_busy,
+                pool_busy,
+                waiting,
+                attention: Severity::Warn,
+                ..summary()
+            };
+            for ink in [Ink::Template, Ink::Light, Ink::Dark] {
+                for scale in [1.0, 2.0] {
+                    let a = render_menubar(&s, ink, scale);
+                    assert!(
+                        a.width as f32 <= 120.0 * scale,
+                        "{own_online}/{own_busy}/+{pool_busy}/[{waiting}] {ink:?} ×{scale}：{} > {}",
+                        a.width,
+                        120.0 * scale
+                    );
+                }
             }
         }
+    }
+
+    #[test]
+    fn few_cells_with_room_to_spare_stay_as_cells() {
+        // 沒超過上限時維持逐格：寬度比同樣機器數的比例條窄不了多少，但不該被無謂地改版
+        let s = Summary {
+            own_online: 4,
+            own_busy: 2,
+            pool_busy: 3,
+            waiting: 1,
+            ..summary()
+        };
+        let narrow = render_menubar(&s, Ink::Template, 2.0);
+        assert!(narrow.width as f32 <= 120.0 * 2.0);
+        // 逐格：寬度 ≥ 4 格 ×12pt
+        assert!(narrow.width as f32 >= 4.0 * 12.0 * 2.0);
     }
 
     #[test]
