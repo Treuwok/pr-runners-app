@@ -51,16 +51,18 @@ pr-runners --help
 
 已跑時間顯示 `⚠?`，代表 GitHub API 回傳的開始時間落在**未來**，所以算不出已經跑了多久，HH:MM 也可能跟著偏掉。2026-11-01 實測：GitHub 的 `merged_at`、run／job 的 `created_at`／`started_at` 全部比實際時間多了整整 1 小時，但 merge commit 物件裡的 committer date 是正確的。這是 GitHub 那邊的問題，不是本機時鐘：本機時間、GitHub 回應的 `Date` header、NTP 三方都一致。
 
-## Blacksmith job（ci-burst 溢出）
+## 臨時機器（按需開機的 runner）
 
-自家 runner 塞車時，org 可能把重 job 暫時改跑在 Blacksmith 的一次性雲端 VM（github-self-hosted-runner-infra 的 ci-burst）。這類 job 的 labels 或 runner 名稱以 `blacksmith-` 開頭，pr-runners 把它們**獨立成一類**，不跟自家 runner 或 GitHub-hosted 混在一起：
+有些 runner 服務（例如 Blacksmith）是按需開機：每個 job 一台全新的 VM，跑完就下線，名稱帶一段亂數（`pool-8x-linux-q7k2m9x4b1c8d3e5`）。pr-runners **只靠名稱形狀**把它們和自家 runner 分開（不認任何廠商名稱，也不讀任何 org 設定）：
 
-- PR 檢視：runner 欄標成 `☁ Blacksmith`（GitHub-hosted 仍是 `☁️ hosted`），也不會出現在 runner 名冊。
-- `--runners`、App 的 runner 名冊：org 名冊裡的 `blacksmith-…` VM 不算 runner（它們用完即丟，不然會變成一排「離線的 runner」）。
-- 排隊對位與「排隊太久」只看自家 runner：Blacksmith 的 job 不參與。
-- App 的 Jobs 頁：顯示 `☁ Blacksmith`。
+- 名稱最後一段（以 `-` 切）長度 ≥ 10、只含小寫英數，而且同時含數字與字母 → 臨時機器；去掉最後一段的剩餘部分是它的**組鍵**（`pool-8x-linux`），畫面上只寫「組名 機型」，不寫亂數名稱。
+- 尾巴全是字母（約 0.5% 的機率）時，若同組另一台符合上面的條件，或組鍵等於某個 job 的 label（App 看得到 job label，終端版沒抓，不套這一條），也算臨時機器。
+- `--runners`：自家 runner 照常一台一行；臨時機器一組一行（`組名 機型  N 在跑`）；離線不再警告：自家離線收成最後一行「離線：a、b」，臨時機器的離線殘骸完全不印。
+- PR 檢視：runner 欄寫 `☁ 組名 機型`（只看該 job 自己的 runner 名稱，所以還在排隊、沒有 runner 名稱的 job 仍標 `☁️ hosted`）。
+- App：Runners 畫面分「自家機器」與「臨時機器」兩區（見 App 一節）；等臨時機器的排隊 job 也算排隊，超過 10 分鐘會提醒；臨時機器的 job 不進「平常跑多久」的歷史樣本。
+- 已知誤判：自家機器若取名 `runner-a1b2c3d4e5` 這種形狀，會被當成臨時機器。
 
-判斷規則在 `crates/rules` 的 `is_blacksmith`／`is_blacksmith_runner`（與 `needs_self_hosted` 同處）；終端版（`bin/pr-runners`）用同樣的前綴判斷。
+判斷規則在 `crates/rules/src/fleet.rs`；終端版（`bin/pr-runners` 的 `POOL_AWK`）是同一條規則的 awk 版本，兩邊共用案例表 `tests/fixtures/runner-names.tsv`。
 
 ## App（第一版）
 

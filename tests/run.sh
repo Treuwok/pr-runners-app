@@ -44,26 +44,54 @@ echo "--runners：完整名冊（時間正常）"
 STUB_START_OFFSET=-125 run --runners --repo acme
 expect_code "exit" 0
 expect_has "標頭" "org=acme"
-expect_has "統計" "共 3 台：🟢1 忙碌  ⚪1 閒置  🔴1 離線"
+expect_has "統計" "自家 2 台：🟢1 忙碌  ⚪1 閒置 · 臨時 2 在跑"
 expect_has "忙碌 runner 帶 repo/PR/job/時間" "runner-a               ← [repo-x PR#42] CI → build (2m5s)"
 expect_has "閒置 runner" "runner-b               閒置"
-expect_has "離線 runner" "runner-c               離線"
+expect_has "自家離線收成最後一行" "離線：runner-c"
+expect_has "臨時機器依組鍵歸成一行，寫組名與機型" "pool 8x-linux"
+expect_has "組內忙碌台數" "2 在跑"
+expect_has "組內 job 摘要" "CI → e2e"
 expect_not "沒有時間偏移註記" '⚠\?'
-expect_not "Blacksmith 的雲端 VM（名冊裡離線）不算 runner" 'blacksmith-2vcpu'
-expect_not "同時帶 self-hosted 與 Blacksmith 機型標籤的 job 也不是自家 runner" 'blacksmith-8vcpu'
+expect_not "任何亂數 runner 名稱（在線或離線殘骸）都不出現" 'q7k2m9x4b1c8d3e5|z8y7x6w5v4u3t2s1|a1b2c3d4e5f6g7h8|m3n4o5p6q7r8s9t0|abcdefghijklmnop'
+expect_not "離線的臨時機器殘骸不算離線 runner" '離線：.*pool'
 
-echo "--runners：名冊裡只有 Blacksmith 的雲端 VM（不是缺權限）"
+echo "--runners：名冊裡只剩臨時機器的離線殘骸（不是缺權限）"
 STUB_ONLY_VMS=1 run --runners --repo acme
 expect_code "exit" 0
 expect_not "不把它誤報成缺 admin:org" 'admin:org'
-expect_has "統計是 0 台" "共 0 台"
-expect_not "VM 不被當成 runner 列出" 'blacksmith-2vcpu'
+expect_has "統計是自家 0 台" "自家 0 台"
+expect_has "說明沒有自家 runner" "目前沒有任何自家 runner"
+expect_not "沒有臨時機器在跑就不出現那一段" '臨時'
+expect_not "殘骸不被列成離線 runner" '離線：'
+expect_not "殘骸名稱不出現" 'a1b2c3d4e5f6g7h8|m3n4o5p6q7r8s9t0|abcdefghijklmnop'
 
-echo "--runners：名稱同前綴的自家 runner 仍在名冊裡"
+echo "--runners：名稱同前綴、尾巴不像亂數的自家 runner 仍是自家 runner"
 STUB_LOOKALIKE=1 run --runners --repo acme
 expect_code "exit" 0
 expect_has "blacksmith-builder 是自家 runner，照常列出" "blacksmith-builder"
-expect_has "它也算進統計" "共 4 台"
+expect_has "它也算進統計" "自家 3 台"
+
+echo "--runners：案例表（tests/fixtures/runner-names.tsv，與 Rust 單元測試共用）"
+NAMES_TSV="$ROOT/tests/fixtures/runner-names.tsv"
+SCENARIO_TMP="$(mktemp -d)"
+trap 'rm -rf "$SCENARIO_TMP"' EXIT
+# labels- 開頭的情境要 job label（規則 c），終端機工具沒有抓，跳過
+scenarios=$(awk -F'\t' '/^#/ || NF < 5 {next} $1 !~ /^labels-/ {print $1}' "$NAMES_TSV" | sort -u)
+for sc in $scenarios; do
+  awk -F'\t' -v sc="$sc" '$1 == sc && $2 == "runner" {print $3}' "$NAMES_TSV" \
+    | jq -R '{name: ., status: "online", busy: false, labels: []}' | jq -s '{runners: .}' > "$SCENARIO_TMP/$sc.json"
+  STUB_RUNNERS_JSON="$SCENARIO_TMP/$sc.json" run --runners --repo acme
+  expect_code "[$sc] exit" 0
+  while IFS=$'\t' read -r _ _ value expect stem; do
+    if [ "$expect" = own ]; then
+      expect_has "[$sc] 自家機器 $value 照常列出" "$value"
+    else
+      expect_not "[$sc] 臨時機器 $value 的名稱不出現" "$value"
+      disp="${stem%%-*}"; [ "$stem" = "$disp" ] || disp="$disp ${stem#*-}"
+      expect_has "[$sc] 組 $disp 出現" "$disp"
+    fi
+  done < <(awk -F'\t' -v sc="$sc" '$1 == sc && $2 == "runner"' "$NAMES_TSV")
+done
 
 echo "--runners：GitHub 時間戳在未來（2026-11-01 實際發生）"
 STUB_START_OFFSET=3005 run --runners --repo acme
@@ -78,7 +106,8 @@ expect_code "exit" 0
 expect_has "退回只顯示忙碌" "🟢 runner-a"
 expect_has "授權提示" "gh auth refresh -h github.com -s admin:org"
 expect_not "不把 403 的 JSON 當成 runner 名" 'Must have admin'
-expect_not "忙碌清單（沒有名冊的路徑）也不列出 Blacksmith 的雲端 VM" 'blacksmith-8vcpu'
+expect_has "忙碌清單（沒有名冊的路徑）臨時機器也歸組" "pool 8x-linux"
+expect_not "忙碌清單不列出亂數 runner 名稱" 'q7k2m9x4b1c8d3e5|z8y7x6w5v4u3t2s1'
 
 echo "PR 檢視（--local）"
 STUB_START_OFFSET=-125 run 42 --repo acme/repo-x --local
@@ -87,11 +116,12 @@ expect_has "PR 標頭" "PR #42"
 expect_has "進行中區塊" "▶ 進行中 / 排隊"
 expect_has "self-hosted job 顯示 runner" "runner-a"
 expect_has "hosted job 標示" "☁️ hosted"
-expect_has "Blacksmith job 單獨標示" "☁ Blacksmith"
-expect_not "Blacksmith job 不進 runner 名冊" '(🟢|⚪) +blacksmith'
-# 只看 integration 那一列：全域比對會被另一個 Blacksmith job（e2e）湊巧滿足
+expect_has "臨時機器 job 只標組名與機型" "☁ pool 8x-linux"
+expect_not "臨時機器 job 不顯示亂數 runner 名稱" 'q7k2m9x4b1c8d3e5|z8y7x6w5v4u3t2s1'
+expect_not "臨時機器不進 runner 名冊" '(🟢|⚪) +pool'
+# 只看 integration 那一列：全域比對會被另一個臨時機器 job（e2e）湊巧滿足
 FULL_OUT="$OUT"; OUT=$(grep -F 'integration' <<<"$FULL_OUT" || true)
-expect_has "integration 那一列標的是 Blacksmith" "☁ Blacksmith"
+expect_has "integration 那一列標的是臨時機器" "☁ pool 8x-linux"
 expect_not "integration 那一列不被當成 hosted" '☁️ hosted'
 OUT="$FULL_OUT"
 expect_has "已完成 job 時間" "1m5s"
