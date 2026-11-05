@@ -6,7 +6,9 @@
   import { formatClock } from "$lib/view";
   import RunnersView from "./RunnersView.svelte";
 
-  let box: HTMLDivElement | undefined = $state();
+  // 量內層內容（不受視窗高度限制）：外層 .popover 會被視窗高度截住，只有 scrollHeight 變大時 ResizeObserver 不會觸發
+  let inner: HTMLDivElement | undefined = $state();
+  const PADDING = 16; // .popover 上下 padding（10 + 6）
 
   onMount(() => {
     let stop = () => {};
@@ -14,9 +16,9 @@
     startStore().then((f) => (stop = f));
     // 高度依內容：量到多高就請 Rust 端調成多高（它會限制在 640 以內）
     const ro = new ResizeObserver(() => {
-      if (box) void invoke("resize_popover", { height: box.scrollHeight }).catch(() => {});
+      if (inner) void invoke("resize_popover", { height: inner.getBoundingClientRect().height + PADDING }).catch(() => {});
     });
-    if (box) ro.observe(box);
+    if (inner) ro.observe(inner);
     return () => {
       stop();
       ro.disconnect();
@@ -26,7 +28,8 @@
   const snap = $derived(store.snapshot);
 </script>
 
-<div class="popover" bind:this={box}>
+<div class="popover">
+<div bind:this={inner}>
   {#if !store.loaded}
     <div class="skeleton" aria-busy="true" aria-label="載入中">
       {#each [0, 1, 2] as i (i)}<div class="sk-row"></div>{/each}
@@ -48,6 +51,7 @@
     <button class="mi" onclick={() => invoke("show_main", { settings: true })}>設定…</button>
     <button class="mi" onclick={() => invoke("quit_app")}>結束</button>
   </div>
+</div>
 </div>
 
 <style>

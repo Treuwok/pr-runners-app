@@ -133,10 +133,11 @@ mod desktop {
 
     const TRAY_ID: &str = "main";
     const POPOVER_MAX_HEIGHT: f64 = 640.0;
-    const POPOVER_MIN_HEIGHT: f64 = 120.0;
-    /// 小視窗最小尺寸（與 tauri.conf.json 一致）。
+    /// 與 tauri.conf.json 的小視窗 minHeight 一致：程式要求的高度不能低於原生最小值，
+    /// 否則原生視窗把它夾回 360，縮放事件和「要求的大小」差很多，會被誤認成使用者拖的。
+    const POPOVER_MIN_HEIGHT: f64 = 360.0;
+    /// 小視窗最小寬度（與 tauri.conf.json 一致）。
     const POPOVER_MIN_WIDTH: f64 = 340.0;
-    const POPOVER_MIN_SIZE_HEIGHT: f64 = 360.0;
     /// 點選單列圖示收起小視窗時，失焦先把它藏起來，緊接著的點擊不能又把它打開。
     const REOPEN_GUARD_MS: u64 = 250;
     static LAST_HIDDEN_AT: AtomicU64 = AtomicU64::new(0);
@@ -150,6 +151,8 @@ mod desktop {
     static USER_SIZED: AtomicBool = AtomicBool::new(false);
     /// 使用者拖了大小、還沒存檔（收起小視窗時才存，免得拖曳過程中每個事件都寫一次檔）。
     static SIZE_DIRTY: AtomicBool = AtomicBool::new(false);
+    /// 已排了一次延後存檔（拖曳過程中事件很密，合併成一次）。
+    static SAVE_PENDING: AtomicBool = AtomicBool::new(false);
     static DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
     fn now_ms() -> u64 {
@@ -194,7 +197,10 @@ mod desktop {
     /// 縮放事件：和程式最後一次要求的大小差很多，才是使用者拖的，記下新大小。
     fn on_popover_resized(w: &WebviewWindow, size: &tauri::PhysicalSize<u32>) {
         let scale = w.scale_factor().unwrap_or(1.0);
-        let actual = (f64::from(size.width) / scale, f64::from(size.height) / scale);
+        let actual = (
+            f64::from(size.width) / scale,
+            f64::from(size.height) / scale,
+        );
         if actual.0 < 1.0 || actual.1 < 1.0 {
             return; // 收起或最小化時的 0 大小
         }
@@ -207,6 +213,16 @@ mod desktop {
         POPOVER_HEIGHT.store(actual.1.to_bits(), Ordering::SeqCst);
         USER_SIZED.store(true, Ordering::SeqCst);
         SIZE_DIRTY.store(true, Ordering::SeqCst);
+        drop(requested);
+        // 不能只靠「收起小視窗」才存：使用者拖完直接按「結束」或 App 被結束，就不會經過收起。
+        // 拖曳停下來半秒後存一次（事件密集時只排一次）。
+        if !SAVE_PENDING.swap(true, Ordering::SeqCst) {
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                SAVE_PENDING.store(false, Ordering::SeqCst);
+                save_popover_size();
+            });
+        }
     }
 
     /// 把小視窗移到選單列圖示正下方（見 `popover_origin`）。
@@ -300,7 +316,7 @@ mod desktop {
             {
                 let (w, h) = (
                     f64::from(w).clamp(POPOVER_MIN_WIDTH, 4000.0),
-                    f64::from(h).clamp(POPOVER_MIN_SIZE_HEIGHT, 4000.0),
+                    f64::from(h).clamp(POPOVER_MIN_HEIGHT, 4000.0),
                 );
                 POPOVER_WIDTH.store(w.to_bits(), Ordering::SeqCst);
                 POPOVER_HEIGHT.store(h.to_bits(), Ordering::SeqCst);
@@ -476,7 +492,10 @@ mod tests {
 
     #[test]
     fn only_a_clearly_different_size_counts_as_the_user_dragging() {
-        assert!(!user_resized((400.0, 560.0), (401.0, 559.0)), "差 1px 是程式自己改的");
+        assert!(
+            !user_resized((400.0, 560.0), (401.0, 559.0)),
+            "差 1px 是程式自己改的"
+        );
         assert!(user_resized((400.0, 560.0), (440.0, 560.0)));
         assert!(user_resized((400.0, 560.0), (400.0, 520.0)));
     }

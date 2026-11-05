@@ -24,7 +24,7 @@
             <span class:warn={g.attention}>{formatElapsed(g.oldest)}</span>
           </div>
         {/if}
-        {#each g.jobs as j (j.name)}
+        {#each g.jobs as j (`${j.name}\u0000${j.wait}`)}
           {#if j.url}
             <button class="qj" onclick={() => openUrl(j.url!)}>
               <span>{j.name} <span class="x">{j.wait}</span></span>
