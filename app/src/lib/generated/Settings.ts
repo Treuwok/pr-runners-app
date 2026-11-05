@@ -8,4 +8,9 @@ always_on_top: boolean,
 /**
  * 主視窗背景不透明度 40–100（%），文字不受影響。舊的 settings.json 沒有這欄 → 100。
  */
-window_opacity: number, };
+window_opacity: number, 
+/**
+ * 小視窗（選單列）被使用者拖過之後的大小（邏輯像素：寬、高）。`None`＝沒拖過，高度繼續隨內容自動調整。
+ * 舊的 settings.json 沒有這欄 → `None`。
+ */
+popover_size: [number, number] | null, };

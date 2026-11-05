@@ -108,6 +108,12 @@ pub fn popover_origin(
 
 /// 打開主視窗時要它去哪一頁。主視窗關閉只是藏起來，分頁與篩選都還留著，
 /// 所以每一次打開都要明確指定目的地，不能留給上一次的狀態決定。
+/// 小視窗是不是被使用者拖過大小：程式自己 `set_size` 也會觸發縮放事件，所以和「最後一次要求的大小」比，
+/// 差超過 2 個邏輯像素才算使用者拖的（前端分不出來，只在 Rust 端判斷）。
+pub fn user_resized(requested: (f64, f64), actual: (f64, f64)) -> bool {
+    (requested.0 - actual.0).abs() > 2.0 || (requested.1 - actual.1).abs() > 2.0
+}
+
 pub fn main_nav_event(settings: bool) -> &'static str {
     if settings {
         "goto-settings"
@@ -119,7 +125,8 @@ pub fn main_nav_event(settings: bool) -> &'static str {
 #[cfg(desktop)]
 mod desktop {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use pr_runners_core::persist::{load_settings, save_settings};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use tauri::image::Image;
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     use tauri::{AppHandle, Emitter, Manager, Rect, WebviewWindow, WindowEvent};
@@ -127,12 +134,23 @@ mod desktop {
     const TRAY_ID: &str = "main";
     const POPOVER_MAX_HEIGHT: f64 = 640.0;
     const POPOVER_MIN_HEIGHT: f64 = 120.0;
-    const POPOVER_WIDTH: f64 = 400.0;
+    /// 小視窗最小尺寸（與 tauri.conf.json 一致）。
+    const POPOVER_MIN_WIDTH: f64 = 340.0;
+    const POPOVER_MIN_SIZE_HEIGHT: f64 = 360.0;
     /// 點選單列圖示收起小視窗時，失焦先把它藏起來，緊接著的點擊不能又把它打開。
     const REOPEN_GUARD_MS: u64 = 250;
     static LAST_HIDDEN_AT: AtomicU64 = AtomicU64::new(0);
     /// 小視窗目前的高度（邏輯像素，f64 的位元）：開在工作列上方時要知道往上推多少。預設同設定檔的 560。
     static POPOVER_HEIGHT: AtomicU64 = AtomicU64::new(0x4081_8000_0000_0000);
+    /// 小視窗目前的寬度（邏輯像素，f64 的位元）：預設 400；使用者拖過就是他拖出來的寬度。
+    static POPOVER_WIDTH: AtomicU64 = AtomicU64::new(0x4079_0000_0000_0000);
+    /// 程式最後一次要求的大小（寬、高）。縮放事件的大小和它差很多，才是使用者拖的。
+    static REQUESTED_SIZE: std::sync::Mutex<(f64, f64)> = std::sync::Mutex::new((400.0, 560.0));
+    /// 使用者拖過大小之後，不再隨內容自動調整高度；內容超出就捲動。
+    static USER_SIZED: AtomicBool = AtomicBool::new(false);
+    /// 使用者拖了大小、還沒存檔（收起小視窗時才存，免得拖曳過程中每個事件都寫一次檔）。
+    static SIZE_DIRTY: AtomicBool = AtomicBool::new(false);
+    static DATA_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
     fn now_ms() -> u64 {
         std::time::SystemTime::now()
@@ -154,6 +172,41 @@ mod desktop {
     fn hide_popover(w: &WebviewWindow) {
         LAST_HIDDEN_AT.store(now_ms(), Ordering::SeqCst);
         let _ = w.hide();
+        save_popover_size();
+    }
+
+    /// 把使用者拖出來的大小寫進設定檔（沒拖過或已存過就什麼都不做）。
+    fn save_popover_size() {
+        if !SIZE_DIRTY.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let Some(dir) = DATA_DIR.get() else {
+            return;
+        };
+        let (w, h) = *REQUESTED_SIZE.lock().expect("requested size");
+        let mut s = load_settings(dir);
+        s.popover_size = Some((w.round() as u32, h.round() as u32));
+        if let Err(e) = save_settings(dir, &s) {
+            eprintln!("小視窗大小存檔失敗：{e}");
+        }
+    }
+
+    /// 縮放事件：和程式最後一次要求的大小差很多，才是使用者拖的，記下新大小。
+    fn on_popover_resized(w: &WebviewWindow, size: &tauri::PhysicalSize<u32>) {
+        let scale = w.scale_factor().unwrap_or(1.0);
+        let actual = (f64::from(size.width) / scale, f64::from(size.height) / scale);
+        if actual.0 < 1.0 || actual.1 < 1.0 {
+            return; // 收起或最小化時的 0 大小
+        }
+        let mut requested = REQUESTED_SIZE.lock().expect("requested size");
+        if !user_resized(*requested, actual) {
+            return;
+        }
+        *requested = actual;
+        POPOVER_WIDTH.store(actual.0.to_bits(), Ordering::SeqCst);
+        POPOVER_HEIGHT.store(actual.1.to_bits(), Ordering::SeqCst);
+        USER_SIZED.store(true, Ordering::SeqCst);
+        SIZE_DIRTY.store(true, Ordering::SeqCst);
     }
 
     /// 把小視窗移到選單列圖示正下方（見 `popover_origin`）。
@@ -188,7 +241,8 @@ mod desktop {
             })
             .collect();
         let height = f64::from_bits(POPOVER_HEIGHT.load(Ordering::SeqCst));
-        let (x, y, scale) = popover_origin(tray, &screens, POPOVER_WIDTH, height);
+        let width = f64::from_bits(POPOVER_WIDTH.load(Ordering::SeqCst));
+        let (x, y, scale) = popover_origin(tray, &screens, width, height);
         // macOS 的視窗座標是各螢幕通用的「點」；Windows 是實體像素（換回圖示所在螢幕的比例）
         #[cfg(target_os = "macos")]
         let r = {
@@ -238,13 +292,30 @@ mod desktop {
             })
             .build(app)?;
 
+        if let Ok(dir) = app.path().app_data_dir() {
+            let _ = DATA_DIR.set(dir.clone());
+            // 上次拖出來的大小：有就沿用（之後不再自動調整高度）
+            if let Some((w, h)) = load_settings(&dir).popover_size
+                && let Some(win) = app.get_webview_window("popover")
+            {
+                let (w, h) = (
+                    f64::from(w).clamp(POPOVER_MIN_WIDTH, 4000.0),
+                    f64::from(h).clamp(POPOVER_MIN_SIZE_HEIGHT, 4000.0),
+                );
+                POPOVER_WIDTH.store(w.to_bits(), Ordering::SeqCst);
+                POPOVER_HEIGHT.store(h.to_bits(), Ordering::SeqCst);
+                *REQUESTED_SIZE.lock().expect("requested size") = (w, h);
+                USER_SIZED.store(true, Ordering::SeqCst);
+                let _ = win.set_size(tauri::LogicalSize::new(w, h));
+            }
+        }
         if let Some(w) = app.get_webview_window("popover") {
             let w2 = w.clone();
-            // 點外面（失焦）就收起
-            w.on_window_event(move |e| {
-                if let WindowEvent::Focused(false) = e {
-                    hide_popover(&w2);
-                }
+            // 點外面（失焦）就收起；使用者拖大小要記下來
+            w.on_window_event(move |e| match e {
+                WindowEvent::Focused(false) => hide_popover(&w2),
+                WindowEvent::Resized(size) => on_popover_resized(&w2, size),
+                _ => {}
             });
         }
         // 主視窗：關閉只是藏起來，App 留在選單列
@@ -303,6 +374,9 @@ mod desktop {
     /// 內容高度改變時調整小視窗。開在圖示上方時（Windows 工作列）高度一變底部就會離開圖示，
     /// 所以先依同一個錨點重新定位、再改大小，讓底部始終貼著圖示、不被推出螢幕。
     pub fn resize_popover(app: &AppHandle, height: f64) {
+        if USER_SIZED.load(Ordering::SeqCst) {
+            return; // 使用者拖過大小：不再隨內容變高，內容超出就在視窗內捲動
+        }
         if let Some(w) = app.get_webview_window("popover") {
             let h = height.clamp(POPOVER_MIN_HEIGHT, POPOVER_MAX_HEIGHT);
             POPOVER_HEIGHT.store(h.to_bits(), Ordering::SeqCst);
@@ -313,7 +387,9 @@ mod desktop {
             {
                 eprintln!("小視窗重新定位失敗：{e}");
             }
-            let _ = w.set_size(tauri::LogicalSize::new(400.0, h));
+            let width = f64::from_bits(POPOVER_WIDTH.load(Ordering::SeqCst));
+            *REQUESTED_SIZE.lock().expect("requested size") = (width, h);
+            let _ = w.set_size(tauri::LogicalSize::new(width, h));
         }
     }
 }
@@ -385,6 +461,24 @@ mod tests {
             popover_origin((2400.0, 0.0, 166.0, 48.0), &screens, 400.0, 560.0),
             (1200.0 + 41.5 - 200.0, 24.0, 2.0)
         );
+    }
+
+    #[test]
+    fn a_wider_popover_stays_centred_on_the_icon_and_inside_the_screen() {
+        let screens = external_on_the_right();
+        // 寬度 600：水平置中於圖示（圖示中心 2041.5），不超出螢幕右緣（2560+1512 = 4072 實體 → 點 4072）
+        let (x, _, _) = popover_origin((2000.0, 0.0, 83.0, 24.0), &screens, 600.0, 560.0);
+        assert_eq!(x, 2041.5 - 300.0);
+        // 圖示靠右緣：寬視窗被推回螢幕內
+        let (x, _, _) = popover_origin((4000.0, 0.0, 70.0, 24.0), &screens, 600.0, 560.0);
+        assert_eq!(x, 4072.0 - 600.0 - 8.0);
+    }
+
+    #[test]
+    fn only_a_clearly_different_size_counts_as_the_user_dragging() {
+        assert!(!user_resized((400.0, 560.0), (401.0, 559.0)), "差 1px 是程式自己改的");
+        assert!(user_resized((400.0, 560.0), (440.0, 560.0)));
+        assert!(user_resized((400.0, 560.0), (400.0, 520.0)));
     }
 
     #[test]

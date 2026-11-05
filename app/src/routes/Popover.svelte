@@ -51,7 +51,7 @@
 </div>
 
 <style>
-  .popover { padding: 10px 0 6px; max-height: 640px; overflow-y: auto; }
+  .popover { padding: 10px 0 6px; max-height: 100vh; overflow-y: auto; }
   .menu { position: sticky; bottom: 0; background: var(--bg); padding-bottom: 6px; }
   .sep { height: 1px; background: var(--hair); margin: 6px 16px; }
   .mi { display: block; width: 100%; padding: 6px 16px; }

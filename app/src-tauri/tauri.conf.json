@@ -16,6 +16,8 @@
         "title": "pr-runners",
         "width": 900,
         "height": 640,
+        "minWidth": 480,
+        "minHeight": 360,
         "visible": false,
         "transparent": true
       },
@@ -29,7 +31,9 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false,
-        "resizable": false,
+        "resizable": true,
+        "minWidth": 340,
+        "minHeight": 360,
         "shadow": true
       }
     ],

@@ -68,6 +68,10 @@ pub struct Settings {
     /// 主視窗背景不透明度 40–100（%），文字不受影響。舊的 settings.json 沒有這欄 → 100。
     #[serde(default = "full_opacity")]
     pub window_opacity: u8,
+    /// 小視窗（選單列）被使用者拖過之後的大小（邏輯像素：寬、高）。`None`＝沒拖過，高度繼續隨內容自動調整。
+    /// 舊的 settings.json 沒有這欄 → `None`。
+    #[serde(default)]
+    pub popover_size: Option<(u32, u32)>,
 }
 
 impl Default for Settings {
@@ -77,6 +81,7 @@ impl Default for Settings {
             hourly_request_target: DEFAULT_HOURLY_TARGET,
             always_on_top: false,
             window_opacity: full_opacity(),
+            popover_size: None,
         }
     }
 }
@@ -258,6 +263,7 @@ mod tests {
         assert_eq!(s.hourly_request_target, 3_000, "舊檔的其他設定照讀");
         assert!(!s.always_on_top);
         assert_eq!(s.window_opacity, 100);
+        assert_eq!(s.popover_size, None, "舊檔沒有小視窗大小");
 
         save_settings(
             dir.path(),
