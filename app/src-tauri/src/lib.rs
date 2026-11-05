@@ -2,6 +2,7 @@ mod commands;
 mod poller;
 mod state;
 mod tray;
+mod tray_icon;
 
 use pr_runners_core::auth::{CLIENT_ID, DeviceFlow};
 use pr_runners_core::persist::{
@@ -62,6 +63,14 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init());
+    // 主視窗記住上次的大小（只記大小）；小視窗的大小改由設定檔的 popover_size 管、位置永遠跟著圖示
+    #[cfg(desktop)]
+    let builder = builder.plugin(
+        tauri_plugin_window_state::Builder::default()
+            .with_state_flags(tauri_plugin_window_state::StateFlags::SIZE)
+            .with_denylist(&["popover"])
+            .build(),
+    );
 
     builder
         .setup(|app| {

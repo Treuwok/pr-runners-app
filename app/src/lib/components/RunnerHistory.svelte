@@ -83,7 +83,7 @@
   {#if found}
     {@const r = found.runner}
     <header class="hhead">
-      <h2><span class="dot {dotFor(r)}" class:alert={r.attention} aria-hidden="true"></span>{r.name}</h2>
+      <h2><span class="dot {dotFor(r)}" aria-hidden="true"></span>{r.name}</h2>
       <p class="hstate">{laneText(r, null)}</p>
       <p class="hmeta">
         {r.os || "OS 不明"} · {r.group ?? "group 不明"} · {found.scope}

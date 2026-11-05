@@ -1,5 +1,9 @@
-{"total_count":4,"runners":[
+{"total_count":8,"runners":[
  {"name":"runner-a","status":"online","busy":true,"labels":[{"name":"self-hosted"},{"name":"linux"}]},
  {"name":"runner-b","status":"online","busy":false,"labels":[{"name":"self-hosted"},{"name":"linux"}]},
  {"name":"runner-c","status":"offline","busy":false,"labels":[{"name":"self-hosted"},{"name":"macOS"}]},
- {"name":"blacksmith-2vcpu-ubuntu-2404-56i2b5l67zytz24p","status":"offline","busy":false,"labels":[]}]}
+ {"name":"pool-8x-linux-q7k2m9x4b1c8d3e5","status":"online","busy":true,"labels":[]},
+ {"name":"pool-8x-linux-z8y7x6w5v4u3t2s1","status":"online","busy":true,"labels":[]},
+ {"name":"pool-8x-linux-a1b2c3d4e5f6g7h8","status":"offline","busy":false,"labels":[]},
+ {"name":"pool-8x-linux-m3n4o5p6q7r8s9t0","status":"offline","busy":false,"labels":[]},
+ {"name":"pool-8x-linux-abcdefghijklmnop","status":"offline","busy":false,"labels":[]}]}

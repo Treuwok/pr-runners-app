@@ -43,7 +43,9 @@ main{flex:1;padding-bottom:var(--main-pad-bottom,8px)}
 .lane .t small{display:block;font-size:12px}
 .lane .t.over{color:var(--tag);font-weight:600}
 .lane .t.over small{font-weight:400;color:var(--muted)}
-@container (max-width:559px){
+/* 寬版型的固定欄（名稱 15rem＋進度條 5rem＋時間 9.5rem＋間距）已佔約 540px，工作名稱至少還要 ~180px：
+   欄寬不到 720px 就用窄版型。兩欄時每欄約 560–600px，用舊的 559px 門檻會把工作名稱擠成直排。 */
+@container (max-width:719px){
   .lane{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"who t" "job job" "meter meter";gap:4px 12px}
   .lane .who{grid-area:who}.lane .t{grid-area:t}.lane .job{grid-area:job}.lane .meter{grid-area:meter}
 }
@@ -135,3 +137,40 @@ input[type=range]{accent-color:var(--run)}
 .hmore .hint,.hmore .note{padding:0}
 @container (max-width:559px){.hrow{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"job badge" "when dur"}.hrow .hjob{grid-area:job}.hrow .badge{grid-area:badge}.hrow .hwhen{grid-area:when}.hrow .hdur{grid-area:dur}}
 .history{container-type:inline-size}
+/* 自家機器／臨時機器分區（Runners 畫面）。外層是 container：寬度夠而且有臨時機器時分兩欄。 */
+.runners{container:runners/inline-size}
+.stats{grid-template-columns:repeat(var(--n,3),minmax(0,1fr))}
+.stat b small{font-size:15px;font-weight:500;color:var(--muted)}
+.cols{display:grid;grid-template-columns:minmax(0,1fr)}
+@container runners (min-width:700px){.cols.two{grid-template-columns:repeat(2,minmax(0,1fr))}.cols.two .foot{grid-column:1/-1}}
+.col{min-width:0}
+.sec{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:10px 18px 6px;flex-wrap:wrap}
+.sec b{font-size:var(--fs-name,17px);font-weight:600}
+.sec span{color:var(--muted);font-size:14px}
+.idles{display:flex;flex-wrap:wrap;gap:4px 14px;padding:10px 18px 4px;font-size:var(--fs,15px)}
+/* 閒置＝在線、沒在做事：標上「閒置 N」，名稱用正常字色、點用空心圈，和離線（灰字灰點，收在底部）分得開 */
+.idle-label{color:var(--muted);font-size:14px;align-self:center}
+.idle{display:inline-flex;align-items:center;gap:7px;color:var(--fg);overflow-wrap:anywhere;padding:2px 0}
+.idle .dot.idle{background:transparent;box-shadow:inset 0 0 0 1.5px var(--muted)}
+.idle:hover{text-decoration:underline}
+.pool{margin:0 16px 10px;padding:10px 14px;border-radius:var(--radius-card,10px);background:var(--surface-a,var(--surface))}
+.ph{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
+.pn{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0;overflow-wrap:anywhere;font-size:var(--fs-name,17px)}
+.pn b{font-weight:600}
+.pc{color:var(--muted);font-size:14px;font-variant-numeric:tabular-nums}
+.cells{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0}
+.cell{width:14px;height:14px;border-radius:3px;background:var(--gray)}
+.cell.busy{background:var(--run)}
+.prow{display:flex;justify-content:space-between;gap:12px;width:100%;padding:5px 0;font-size:var(--fs,15px);border-top:1px solid var(--hair)}
+.pj{display:flex;align-items:baseline;gap:8px;min-width:0;overflow-wrap:anywhere}
+.pj .x{color:var(--muted)}
+.pt{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+button.prow:hover{background:var(--chip)}
+.pmore{color:var(--muted);font-size:14px;padding-top:4px}
+.offline{padding:6px 16px 2px;display:flex;flex-direction:column;align-items:flex-end}
+.offbtn{color:var(--muted);font-size:14px;padding:4px 2px}
+.offbtn:hover{color:var(--fg)}
+.offline .card{margin:4px 0 0;width:100%}
+.offrow{display:flex;justify-content:space-between;gap:12px;width:100%;padding:8px 14px;font-size:var(--fs,15px)}
+.offrow:hover{background:var(--chip)}
+.offrow .quiet{color:var(--muted);white-space:nowrap}

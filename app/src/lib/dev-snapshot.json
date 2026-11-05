@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "generated_at": 1793620000,
   "accounts": [
     {
@@ -38,16 +38,16 @@
                 "url": "https://github.com/Acme/acme-app/actions/runs/11",
                 "runner_name": "mac-mini-1",
                 "hosted": false,
-                "blacksmith": false,
-                "typical_secs": 1620
+                "typical_secs": 1620,
+                "pool": null
               },
               "elapsed": {
                 "Known": {
                   "secs": 1860
                 }
               },
-              "attention": false,
-              "can_take": "CanTakeBusy"
+              "can_take": "CanTakeBusy",
+              "pool": null
             },
             {
               "key": "1/Acme/29",
@@ -75,16 +75,16 @@
                 "url": "https://github.com/Acme/acme-api/actions/runs/12",
                 "runner_name": "vps-1",
                 "hosted": false,
-                "blacksmith": false,
-                "typical_secs": 1620
+                "typical_secs": 1620,
+                "pool": null
               },
               "elapsed": {
                 "Known": {
                   "secs": 540
                 }
               },
-              "attention": false,
-              "can_take": null
+              "can_take": null,
+              "pool": null
             },
             {
               "key": "1/Acme/31",
@@ -105,8 +105,8 @@
               "group": "Default",
               "job": null,
               "elapsed": null,
-              "attention": true,
-              "can_take": null
+              "can_take": null,
+              "pool": null
             },
             {
               "key": "1/Acme/6",
@@ -121,8 +121,8 @@
               "group": "shared-linux",
               "job": null,
               "elapsed": null,
-              "attention": false,
-              "can_take": null
+              "can_take": null,
+              "pool": null
             },
             {
               "key": "1/Acme/30",
@@ -135,8 +135,126 @@
               "group": "ci-light",
               "job": null,
               "elapsed": null,
-              "attention": false,
-              "can_take": null
+              "can_take": null,
+              "pool": null
+            },
+            {
+              "key": "1/Acme/90",
+              "name": "pool-8x-linux-q7k2m9x4b1c8d3e5",
+              "os": "",
+              "state": "Busy",
+              "labels": [],
+              "group": null,
+              "job": {
+                "key": "20/1",
+                "repo": "Acme/acme-api",
+                "workflow": "api-ci",
+                "job": "integration",
+                "state": "InProgress",
+                "labels": [
+                  "pool-8x-linux"
+                ],
+                "pr_tag": "PR#51",
+                "url": "https://github.com/Acme/acme-api/actions/runs/21",
+                "runner_name": "pool-8x-linux-q7k2m9x4b1c8d3e5",
+                "hosted": false,
+                "typical_secs": null,
+                "pool": {
+                  "stem": "pool-8x-linux",
+                  "name": "pool",
+                  "machine": "8x-linux"
+                }
+              },
+              "elapsed": {
+                "Known": {
+                  "secs": 240
+                }
+              },
+              "can_take": null,
+              "pool": {
+                "stem": "pool-8x-linux",
+                "name": "pool",
+                "machine": "8x-linux"
+              }
+            },
+            {
+              "key": "1/Acme/91",
+              "name": "pool-8x-linux-z8y7x6w5v4u3t2s1",
+              "os": "",
+              "state": "Busy",
+              "labels": [],
+              "group": null,
+              "job": {
+                "key": "21/1",
+                "repo": "Acme/acme-api",
+                "workflow": "api-ci",
+                "job": "integration",
+                "state": "InProgress",
+                "labels": [
+                  "pool-8x-linux"
+                ],
+                "pr_tag": "PR#51",
+                "url": "https://github.com/Acme/acme-api/actions/runs/22",
+                "runner_name": "pool-8x-linux-z8y7x6w5v4u3t2s1",
+                "hosted": false,
+                "typical_secs": null,
+                "pool": {
+                  "stem": "pool-8x-linux",
+                  "name": "pool",
+                  "machine": "8x-linux"
+                }
+              },
+              "elapsed": {
+                "Known": {
+                  "secs": 330
+                }
+              },
+              "can_take": null,
+              "pool": {
+                "stem": "pool-8x-linux",
+                "name": "pool",
+                "machine": "8x-linux"
+              }
+            },
+            {
+              "key": "1/Acme/92",
+              "name": "pool-8x-linux-a1b2c3d4e5f6g7h8",
+              "os": "",
+              "state": {
+                "Offline": {
+                  "since": "Unknown"
+                }
+              },
+              "labels": [],
+              "group": null,
+              "job": null,
+              "elapsed": null,
+              "can_take": null,
+              "pool": {
+                "stem": "pool-8x-linux",
+                "name": "pool",
+                "machine": "8x-linux"
+              }
+            },
+            {
+              "key": "1/Acme/93",
+              "name": "pool-8x-linux-m3n4o5p6q7r8s9t0",
+              "os": "",
+              "state": {
+                "Offline": {
+                  "since": "Unknown"
+                }
+              },
+              "labels": [],
+              "group": null,
+              "job": null,
+              "elapsed": null,
+              "can_take": null,
+              "pool": {
+                "stem": "pool-8x-linux",
+                "name": "pool",
+                "machine": "8x-linux"
+              }
             }
           ],
           "waiting": [
@@ -156,8 +274,8 @@
                 "url": "https://github.com/Acme/acme-web/actions/runs/13",
                 "runner_name": null,
                 "hosted": false,
-                "blacksmith": false,
-                "typical_secs": null
+                "typical_secs": null,
+                "pool": null
               },
               "age": {
                 "Known": {
@@ -172,6 +290,35 @@
                   "kind": "CanTakeBusy"
                 }
               ]
+            },
+            {
+              "job": {
+                "key": "31/1",
+                "repo": "Acme/acme-api",
+                "workflow": "api-ci",
+                "job": "e2e-linux",
+                "state": "Queued",
+                "labels": [
+                  "Pool-8X-Linux"
+                ],
+                "pr_tag": "PR#51",
+                "url": "https://github.com/Acme/acme-api/actions/runs/31",
+                "runner_name": null,
+                "hosted": false,
+                "typical_secs": null,
+                "pool": {
+                  "stem": "pool-8x-linux",
+                  "name": "pool",
+                  "machine": "8x-linux"
+                }
+              },
+              "age": {
+                "Known": {
+                  "secs": 180
+                }
+              },
+              "attention": false,
+              "candidates": []
             }
           ],
           "jobs": [
@@ -190,8 +337,8 @@
               "url": "https://github.com/Acme/acme-app/actions/runs/11",
               "runner_name": "mac-mini-1",
               "hosted": false,
-              "blacksmith": false,
-              "typical_secs": null
+              "typical_secs": null,
+              "pool": null
             },
             {
               "key": "12/2",
@@ -208,8 +355,8 @@
               "url": "https://github.com/Acme/acme-api/actions/runs/12",
               "runner_name": "vps-1",
               "hosted": false,
-              "blacksmith": false,
-              "typical_secs": null
+              "typical_secs": null,
+              "pool": null
             },
             {
               "key": "13/3",
@@ -226,8 +373,8 @@
               "url": "https://github.com/Acme/acme-web/actions/runs/13",
               "runner_name": null,
               "hosted": false,
-              "blacksmith": false,
-              "typical_secs": null
+              "typical_secs": null,
+              "pool": null
             },
             {
               "key": "14/4",
@@ -242,8 +389,68 @@
               "url": "https://github.com/Acme/acme-web/actions/runs/14",
               "runner_name": "GitHub Actions 3",
               "hosted": true,
-              "blacksmith": false,
-              "typical_secs": null
+              "typical_secs": null,
+              "pool": null
+            },
+            {
+              "key": "20/1",
+              "repo": "Acme/acme-api",
+              "workflow": "api-ci",
+              "job": "integration",
+              "state": "InProgress",
+              "labels": [
+                "pool-8x-linux"
+              ],
+              "pr_tag": "PR#51",
+              "url": "https://github.com/Acme/acme-api/actions/runs/21",
+              "runner_name": "pool-8x-linux-q7k2m9x4b1c8d3e5",
+              "hosted": false,
+              "typical_secs": null,
+              "pool": {
+                "stem": "pool-8x-linux",
+                "name": "pool",
+                "machine": "8x-linux"
+              }
+            },
+            {
+              "key": "21/1",
+              "repo": "Acme/acme-api",
+              "workflow": "api-ci",
+              "job": "integration",
+              "state": "InProgress",
+              "labels": [
+                "pool-8x-linux"
+              ],
+              "pr_tag": "PR#51",
+              "url": "https://github.com/Acme/acme-api/actions/runs/22",
+              "runner_name": "pool-8x-linux-z8y7x6w5v4u3t2s1",
+              "hosted": false,
+              "typical_secs": null,
+              "pool": {
+                "stem": "pool-8x-linux",
+                "name": "pool",
+                "machine": "8x-linux"
+              }
+            },
+            {
+              "key": "31/1",
+              "repo": "Acme/acme-api",
+              "workflow": "api-ci",
+              "job": "e2e-linux",
+              "state": "Queued",
+              "labels": [
+                "Pool-8X-Linux"
+              ],
+              "pr_tag": "PR#51",
+              "url": "https://github.com/Acme/acme-api/actions/runs/31",
+              "runner_name": null,
+              "hosted": false,
+              "typical_secs": null,
+              "pool": {
+                "stem": "pool-8x-linux",
+                "name": "pool",
+                "machine": "8x-linux"
+              }
             }
           ],
           "last_updated_at": 1793620000
@@ -261,10 +468,12 @@
     }
   ],
   "summary": {
-    "busy": 2,
-    "idle": 2,
-    "offline": 1,
-    "waiting": 1,
-    "attention": "Critical"
+    "own_busy": 2,
+    "own_online": 4,
+    "own_offline": 1,
+    "pool_busy": 2,
+    "waiting": 2,
+    "attention": "Warn",
+    "stale": false
   }
 }

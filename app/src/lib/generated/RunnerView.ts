@@ -2,9 +2,14 @@
 import type { CandidateKind } from "./CandidateKind";
 import type { Elapsed } from "./Elapsed";
 import type { JobView } from "./JobView";
+import type { PoolTag } from "./PoolTag";
 import type { RunnerState } from "./RunnerState";
 
-export type RunnerView = { key: string, name: string, os: string, state: RunnerState, labels: Array<string>, group: string | null, job: JobView | null, elapsed: Elapsed | null, attention: boolean, 
+export type RunnerView = { key: string, name: string, os: string, state: RunnerState, labels: Array<string>, group: string | null, job: JobView | null, elapsed: Elapsed | null, 
+/**
+ * 臨時機器所屬的組；自家機器是 `None`。畫面照這個分區，不重算分類
+ */
+pool: PoolTag | null, 
 /**
  * 是否被某筆等待中 job 標成能接（取最確定的一種）
  */

@@ -12,9 +12,7 @@ use crate::persist::{AccountKind, AccountMeta, clamp_hourly_target};
 use crate::runlog::{BackfillReport, RunLog, backfill_records};
 use crate::view::*;
 use futures_util::future::join_all;
-use pr_runners_rules::{
-    Attention, GroupAccess, ObservationState, is_blacksmith, needs_self_hosted,
-};
+use pr_runners_rules::{Attention, Fleet, GroupAccess, ObservationState, needs_self_hosted};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use tokio::sync::Semaphore;
@@ -329,6 +327,16 @@ impl Account {
     }
 }
 
+/// 這個 job 要不要為它查「平常跑多久」：正在自家（self-hosted）runner 上跑的才要；跑在臨時機器上的不要。
+fn wants_history(j: &JobInfo, fleet: &Fleet) -> bool {
+    j.facts.state == pr_runners_rules::JobState::InProgress
+        && needs_self_hosted(&j.facts)
+        && j.facts
+            .runner_name
+            .as_deref()
+            .is_none_or(|n| fleet.stem_of(n).is_none())
+}
+
 async fn scan_repo(
     ctx: &Ctx<'_>,
     repo: &RepoInfo,
@@ -353,12 +361,21 @@ async fn scan_repo(
         if jobs.is_empty() {
             continue;
         }
-        // PR 反查只在這個 run 真的有 self-hosted 或 Blacksmith job 要顯示時才做
-        // （ci-burst 把重 job 搬走後，整個 run 可能只剩 Blacksmith job，仍要帶 PR 標籤）
-        let tag = if jobs
-            .iter()
-            .any(|j| needs_self_hosted(&j.facts) || is_blacksmith(&j.facts))
-        {
+        // PR 反查只在這個 run 真的有 self-hosted 或臨時機器的 job 要顯示時才做
+        // （整個 run 可能只剩臨時機器的 job，仍要帶 PR 標籤）。這裡只看這個 run 的 runner 名稱形狀；
+        // 還在排隊、沒有 runner 名稱的臨時機器 job 認不出來，退回本地標籤。
+        let fleet = Fleet::observe(
+            jobs.iter().filter_map(|j| j.facts.runner_name.as_deref()),
+            jobs.iter()
+                .flat_map(|j| j.facts.labels.iter().map(String::as_str)),
+        );
+        let tag = if jobs.iter().any(|j| {
+            needs_self_hosted(&j.facts)
+                || j.facts
+                    .runner_name
+                    .as_deref()
+                    .is_some_and(|n| fleet.stem_of(n).is_some())
+        }) {
             match api::pr_tag(c, cache, &run).await {
                 Ok(t) => t,
                 Err(e) if e.is_account_wide() => return Err(e),
@@ -515,14 +532,16 @@ async fn scan_scope(
     let workflow_key = |j: &api::JobInfo| -> Option<WorkflowKey> {
         j.workflow_id.map(|w| (j.facts.repo.clone(), w))
     };
-    let wanted: BTreeSet<WorkflowKey> = rt
-        .repo_runs
-        .values()
-        .flatten()
-        .flat_map(|e| &e.jobs)
-        .filter(|j| {
-            j.facts.state == pr_runners_rules::JobState::InProgress && needs_self_hosted(&j.facts)
-        })
+    // 臨時機器的 job 不預估（組裝時會丟掉），所以也不該花歷史查詢的配額去抓它們的樣本
+    let all_jobs = || rt.repo_runs.values().flatten().flat_map(|e| &e.jobs);
+    let fleet = Fleet::observe(
+        recs.iter()
+            .map(|r| r.facts.name.as_str())
+            .chain(all_jobs().filter_map(|j| j.facts.runner_name.as_deref())),
+        all_jobs().flat_map(|j| j.facts.labels.iter().map(String::as_str)),
+    );
+    let wanted: BTreeSet<WorkflowKey> = all_jobs()
+        .filter(|j| wants_history(j, &fleet))
         .filter_map(workflow_key)
         .collect();
     if !wanted.is_empty() && !c.rate().is_low() {
@@ -853,7 +872,8 @@ impl Collector {
     /// 全部帳號都被限流時，等到最早的解除時間，不受 600 秒上限截短。
     /// 只是配額偏低（< 20%）不算被限流：那只拉長間隔。
     pub fn next_delay(&self, snap: &Snapshot) -> Duration {
-        let has_work = snap.summary.busy > 0 || snap.summary.waiting > 0;
+        let has_work =
+            snap.summary.own_busy + snap.summary.pool_busy > 0 || snap.summary.waiting > 0;
         let base = base_delay_secs(has_work);
         let low_quota = self.accounts.iter().any(|a| a.client.rate().is_low());
         let projected = (self.last_incremental_cost.saturating_mul(3_600) / base)
@@ -893,6 +913,44 @@ mod tests {
     const NOW: i64 = 1_000_000;
     fn set(items: &[&str]) -> BTreeSet<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn job_on(runner: &str, group: &str) -> JobInfo {
+        JobInfo {
+            facts: pr_runners_rules::JobFacts {
+                key: "1/1".into(),
+                repo: "o/r".into(),
+                repo_public: false,
+                state: pr_runners_rules::JobState::InProgress,
+                labels: vec![],
+                runner_id: Some(1),
+                runner_name: Some(runner.into()),
+                runner_group_name: Some(group.into()),
+                created_at: 0,
+                started_at: Some(1),
+            },
+            run_id: 1,
+            job_id: 1,
+            workflow_id: Some(7),
+            workflow_name: "ci".into(),
+            job_name: "t".into(),
+            html_url: String::new(),
+            run_attempt: 1,
+        }
+    }
+
+    #[test]
+    fn history_is_only_fetched_for_jobs_on_own_runners() {
+        // 臨時機器上的 job（group 非空，needs_self_hosted 為 true）不查歷史；自家機器的要查
+        let pool = job_on("pool-8x-linux-q7k2m9x4b1c8d3e5", "Default");
+        let own = job_on("netcup", "Default");
+        let fleet = Fleet::observe(["pool-8x-linux-q7k2m9x4b1c8d3e5", "netcup"], []);
+        assert!(
+            needs_self_hosted(&pool.facts),
+            "前提：它會被當成 self-hosted"
+        );
+        assert!(!wants_history(&pool, &fleet));
+        assert!(wants_history(&own, &fleet));
     }
 
     #[test]

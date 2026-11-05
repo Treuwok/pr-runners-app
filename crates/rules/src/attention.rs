@@ -1,13 +1,13 @@
 //! 「需要注意」規則與觀察狀態（spec §10）。純函式：
 //! 輸入「上一個狀態＋這一輪看到的事實＋現在時間」，輸出新狀態、需要注意清單、狀態轉換事件。
+//! runner 離線不算需要注意（自家機器離線「需要時找得到就好」、臨時機器本來就會下線）；
+//! 離線時間照舊追蹤，畫面要顯示離線多久。需要注意只剩「job 排隊太久」。
 
 use crate::model::{Elapsed, JobState};
 use crate::time::queued_age;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// 觀察到離線之後，連續離線超過這麼久才算需要注意（避開 runner 自動更新的短暫斷線）。
-pub const OFFLINE_GRACE_SECS: i64 = 180;
 /// job 排隊超過這麼久才算需要注意。
 pub const QUEUE_LIMIT_SECS: i64 = 600;
 /// 距上次成功觀察超過這麼久，中間發生什麼不知道，視同第一次看到。
@@ -52,7 +52,6 @@ pub struct JobObs {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum Attention {
-    RunnerOffline { key: String, since: OfflineSince },
     JobQueuedTooLong { key: String, age: Elapsed },
 }
 
@@ -60,8 +59,6 @@ pub enum Attention {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum AttentionEvent {
-    RunnerWentOffline { key: String },
-    RunnerRecovered { key: String },
     JobQueuedTooLong { key: String },
     JobQueueCleared { key: String },
 }
@@ -88,7 +85,7 @@ pub fn evaluate(
 
     let mut attention = Vec::new();
 
-    // runner：只留這一輪還看得到、而且離線的
+    // runner：只留這一輪還看得到、而且離線的（只追蹤離線多久，不產生需要注意）
     let mut offline_since = BTreeMap::new();
     for r in runners.iter().filter(|r| !r.online) {
         let since = match prev.offline_since.get(&r.key) {
@@ -97,16 +94,6 @@ pub fn evaluate(
             None if first => OfflineSince::Unknown,
             None => OfflineSince::Observed(now),
         };
-        let flagged = match since {
-            OfflineSince::Unknown => true,
-            OfflineSince::Observed(t) => now - t > OFFLINE_GRACE_SECS,
-        };
-        if flagged {
-            attention.push(Attention::RunnerOffline {
-                key: r.key.clone(),
-                since,
-            });
-        }
         offline_since.insert(r.key.clone(), since);
     }
 
@@ -132,7 +119,7 @@ pub fn evaluate(
         }
     }
 
-    let events = diff_events(prev_attention, &attention, runners);
+    let events = diff_events(prev_attention, &attention);
     let state = ObservationState {
         offline_since,
         job_first_seen,
@@ -141,54 +128,22 @@ pub fn evaluate(
     (state, attention, events)
 }
 
-/// 事件由「上一輪」與「這一輪」需要注意的集合差產生；`since`／`age` 變了不算新事件。
-fn diff_events(
-    prev: &[Attention],
-    next: &[Attention],
-    runners: &[RunnerObs],
-) -> Vec<AttentionEvent> {
-    #[derive(PartialEq, Eq, PartialOrd, Ord)]
-    enum Id<'a> {
-        Runner(&'a str),
-        Job(&'a str),
-    }
-    fn id(a: &Attention) -> Id<'_> {
+/// 事件由「上一輪」與「這一輪」需要注意的集合差產生；`age` 變了不算新事件。
+fn diff_events(prev: &[Attention], next: &[Attention]) -> Vec<AttentionEvent> {
+    fn key(a: &Attention) -> &str {
         match a {
-            Attention::RunnerOffline { key, .. } => Id::Runner(key),
-            Attention::JobQueuedTooLong { key, .. } => Id::Job(key),
+            Attention::JobQueuedTooLong { key, .. } => key,
         }
     }
-    let prev_ids: BTreeSet<Id> = prev.iter().map(id).collect();
-    let next_ids: BTreeSet<Id> = next.iter().map(id).collect();
+    let prev_keys: BTreeSet<&str> = prev.iter().map(key).collect();
+    let next_keys: BTreeSet<&str> = next.iter().map(key).collect();
 
     let mut events = Vec::new();
-    for a in next {
-        if !prev_ids.contains(&id(a)) {
-            events.push(match a {
-                Attention::RunnerOffline { key, .. } => {
-                    AttentionEvent::RunnerWentOffline { key: key.clone() }
-                }
-                Attention::JobQueuedTooLong { key, .. } => {
-                    AttentionEvent::JobQueuedTooLong { key: key.clone() }
-                }
-            });
-        }
+    for k in next_keys.difference(&prev_keys) {
+        events.push(AttentionEvent::JobQueuedTooLong { key: k.to_string() });
     }
-    for a in prev {
-        if next_ids.contains(&id(a)) {
-            continue;
-        }
-        match a {
-            // runner 被刪掉（輸入裡不見了）不是「恢復上線」，不發事件
-            Attention::RunnerOffline { key, .. } => {
-                if runners.iter().any(|r| r.online && &r.key == key) {
-                    events.push(AttentionEvent::RunnerRecovered { key: key.clone() });
-                }
-            }
-            Attention::JobQueuedTooLong { key, .. } => {
-                events.push(AttentionEvent::JobQueueCleared { key: key.clone() });
-            }
-        }
+    for k in prev_keys.difference(&next_keys) {
+        events.push(AttentionEvent::JobQueueCleared { key: k.to_string() });
     }
     events
 }
@@ -211,52 +166,43 @@ mod tests {
             self_hosted,
         }
     }
-    fn offline(key: &str, since: OfflineSince) -> Attention {
-        Attention::RunnerOffline {
-            key: key.into(),
-            since,
-        }
+    /// 離線 runner 的追蹤結果：只看 `offline_since`，需要注意清單永遠是空的。
+    fn run(
+        prev: &ObservationState,
+        runners: &[RunnerObs],
+        now: i64,
+        first: bool,
+    ) -> ObservationState {
+        let (s, a, ev) = evaluate(prev, &[], runners, &[], now, first);
+        assert!(a.is_empty(), "runner 離線不算需要注意");
+        assert!(ev.is_empty(), "runner 離線不產生事件");
+        s
     }
 
     #[test]
-    fn offline_seen_transition_waits_grace() {
-        let s0 = ObservationState::default();
-        // s0 沒有 last_observed_at → 視同首次，r1 在線不受影響
-        let (s1, a1, _) = evaluate(&s0, &[], &[ro("r1", true)], &[], 1_000, false);
-        let (s2, a2, _) = evaluate(&s1, &a1, &[ro("r1", false)], &[], 1_100, false);
-        assert!(a2.is_empty()); // 剛離線，0 秒 < 180
-        let (_, a3, ev) = evaluate(&s2, &a2, &[ro("r1", false)], &[], 1_281, false);
-        assert_eq!(a3, vec![offline("r1", OfflineSince::Observed(1_100))]);
-        assert_eq!(
-            ev,
-            vec![AttentionEvent::RunnerWentOffline { key: "r1".into() }]
-        );
-    }
-
-    #[test]
-    fn offline_exactly_at_grace_does_not_flag_yet() {
-        let s0 = ObservationState::default();
-        let (s1, a1, _) = evaluate(&s0, &[], &[ro("r1", true)], &[], 1_000, false);
-        let (s2, a2, _) = evaluate(&s1, &a1, &[ro("r1", false)], &[], 1_100, false);
-        let (_, a3, _) = evaluate(&s2, &a2, &[ro("r1", false)], &[], 1_280, false);
-        assert!(a3.is_empty()); // 恰好 180 秒：「超過」才算
-    }
-
-    #[test]
-    fn offline_on_first_observation_is_immediate_unknown() {
-        let (_, a, ev) = evaluate(
+    fn offline_runner_is_never_flagged_but_still_tracked() {
+        let s1 = run(
             &ObservationState::default(),
-            &[],
+            &[ro("r1", true)],
+            1_000,
+            false,
+        );
+        let s2 = run(&s1, &[ro("r1", false)], 1_100, false);
+        assert_eq!(s2.offline_since["r1"], OfflineSince::Observed(1_100));
+        // 離線很久也不變成需要注意，離線起點照舊
+        let s3 = run(&s2, &[ro("r1", false)], 1_500, false);
+        assert_eq!(s3.offline_since["r1"], OfflineSince::Observed(1_100));
+    }
+
+    #[test]
+    fn offline_on_first_observation_is_unknown() {
+        let s = run(
+            &ObservationState::default(),
             &[ro("r1", false)],
-            &[],
             1_000,
             true,
         );
-        assert_eq!(a, vec![offline("r1", OfflineSince::Unknown)]);
-        assert_eq!(
-            ev,
-            vec![AttentionEvent::RunnerWentOffline { key: "r1".into() }]
-        );
+        assert_eq!(s.offline_since["r1"], OfflineSince::Unknown);
     }
 
     #[test]
@@ -267,8 +213,7 @@ mod tests {
         prev.offline_since
             .insert("r1".into(), OfflineSince::Observed(500));
         prev.last_observed_at = Some(600);
-        let (s, a, _) = evaluate(&prev, &[], &[ro("r1", false)], &[], 1_000, true);
-        assert_eq!(a, vec![offline("r1", OfflineSince::Observed(500))]);
+        let s = run(&prev, &[ro("r1", false)], 1_000, true);
         assert_eq!(s.offline_since["r1"], OfflineSince::Observed(500));
     }
 
@@ -279,8 +224,7 @@ mod tests {
         prev.offline_since
             .insert("r1".into(), OfflineSince::Observed(500));
         prev.last_observed_at = Some(600);
-        let (s, a, _) = evaluate(&prev, &[], &[ro("r1", false)], &[], 30_000, false);
-        assert_eq!(a, vec![offline("r1", OfflineSince::Unknown)]);
+        let s = run(&prev, &[ro("r1", false)], 30_000, false);
         assert_eq!(s.offline_since["r1"], OfflineSince::Unknown);
     }
 
@@ -290,8 +234,8 @@ mod tests {
         prev.offline_since
             .insert("r1".into(), OfflineSince::Observed(500));
         prev.last_observed_at = Some(1_000);
-        let (_, a, _) = evaluate(&prev, &[], &[ro("r1", false)], &[], 1_900, false);
-        assert_eq!(a, vec![offline("r1", OfflineSince::Observed(500))]);
+        let s = run(&prev, &[ro("r1", false)], 1_900, false);
+        assert_eq!(s.offline_since["r1"], OfflineSince::Observed(500));
     }
 
     #[test]
@@ -301,8 +245,7 @@ mod tests {
         prev.offline_since
             .insert("r1".into(), OfflineSince::Observed(5_000));
         prev.last_observed_at = Some(5_100);
-        let (s, a, _) = evaluate(&prev, &[], &[ro("r1", false)], &[], 1_000, false);
-        assert_eq!(a, vec![offline("r1", OfflineSince::Unknown)]);
+        let s = run(&prev, &[ro("r1", false)], 1_000, false);
         assert_eq!(s.offline_since["r1"], OfflineSince::Unknown);
         assert_eq!(s.last_observed_at, Some(1_000));
     }
@@ -314,8 +257,8 @@ mod tests {
             last_observed_at: Some(5_000),
             ..Default::default()
         };
-        let (_, a, _) = evaluate(&prev, &[], &[ro("r1", false)], &[], 1_000, false);
-        assert_eq!(a, vec![offline("r1", OfflineSince::Unknown)]);
+        let s = run(&prev, &[ro("r1", false)], 1_000, false);
+        assert_eq!(s.offline_since["r1"], OfflineSince::Unknown);
     }
 
     #[test]
@@ -325,48 +268,28 @@ mod tests {
         prev.offline_since
             .insert("r1".into(), OfflineSince::Observed(2_000));
         prev.last_observed_at = Some(900);
-        let (_, a, _) = evaluate(&prev, &[], &[ro("r1", false)], &[], 1_000, false);
-        assert_eq!(a, vec![offline("r1", OfflineSince::Unknown)]);
+        let s = run(&prev, &[ro("r1", false)], 1_000, false);
+        assert_eq!(s.offline_since["r1"], OfflineSince::Unknown);
     }
 
     #[test]
-    fn recovery_clears_and_emits_event() {
+    fn recovery_forgets_the_offline_start() {
         let mut prev = ObservationState::default();
         prev.offline_since
             .insert("r1".into(), OfflineSince::Observed(500));
         prev.last_observed_at = Some(900);
-        let prev_att = [offline("r1", OfflineSince::Observed(500))];
-        let (s, a, ev) = evaluate(&prev, &prev_att, &[ro("r1", true)], &[], 1_000, false);
-        assert!(a.is_empty());
-        assert!(s.offline_since.is_empty());
-        assert_eq!(
-            ev,
-            vec![AttentionEvent::RunnerRecovered { key: "r1".into() }]
-        );
-    }
-
-    #[test]
-    fn removed_runner_is_dropped_without_recovered_event() {
-        let mut prev = ObservationState::default();
-        prev.offline_since
-            .insert("r1".into(), OfflineSince::Unknown);
-        prev.last_observed_at = Some(900);
-        let prev_att = [offline("r1", OfflineSince::Unknown)];
-        let (s, a, ev) = evaluate(&prev, &prev_att, &[], &[], 1_000, false);
-        assert!(a.is_empty() && ev.is_empty());
+        let s = run(&prev, &[ro("r1", true)], 1_000, false);
         assert!(s.offline_since.is_empty());
     }
 
     #[test]
-    fn still_offline_emits_no_repeat_event() {
+    fn removed_runner_is_dropped() {
         let mut prev = ObservationState::default();
         prev.offline_since
             .insert("r1".into(), OfflineSince::Unknown);
         prev.last_observed_at = Some(900);
-        let prev_att = [offline("r1", OfflineSince::Unknown)];
-        let (_, a, ev) = evaluate(&prev, &prev_att, &[ro("r1", false)], &[], 1_000, false);
-        assert_eq!(a.len(), 1);
-        assert!(ev.is_empty());
+        let s = run(&prev, &[], 1_000, false);
+        assert!(s.offline_since.is_empty());
     }
 
     #[test]

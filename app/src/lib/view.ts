@@ -4,6 +4,8 @@ import type { AccountStatus } from "./generated/AccountStatus";
 import type { CandidateKind } from "./generated/CandidateKind";
 import type { Elapsed } from "./generated/Elapsed";
 import type { JobOutcome } from "./generated/JobOutcome";
+import type { JobView } from "./generated/JobView";
+import type { PoolTag } from "./generated/PoolTag";
 import type { BackfillReport } from "./generated/BackfillReport";
 import type { JobRecord } from "./generated/JobRecord";
 import type { RosterLevel } from "./generated/RosterLevel";
@@ -67,13 +69,18 @@ export function jobText(job: { repo: string; job: string }, dominant: string | n
 }
 
 /**
- * Jobs 頁上「這個 job 跑在哪」：Blacksmith（ci-burst 溢出的雲端 VM）、GitHub-hosted、自家 runner 三者分開顯示。
- * Blacksmith 先判斷：它有 runner 名稱，不能被當成自家 runner。沒有可顯示的就是空字串。
+ * Jobs 頁上「這個 job 跑在哪」：臨時機器（只寫組名與機型，不寫亂數名稱）、GitHub-hosted、自家 runner 三者分開顯示。
+ * 臨時機器先判斷：它有 runner 名稱，不能被當成自家 runner。沒有可顯示的就是空字串。
  */
-export function jobWhere(job: { blacksmith: boolean; hosted: boolean; runner_name: string | null }): string {
-  if (job.blacksmith) return "☁ Blacksmith";
+export function jobWhere(job: { pool: PoolTag | null; hosted: boolean; runner_name: string | null }): string {
+  if (job.pool) return poolLabel(job.pool);
   if (job.hosted) return "GitHub-hosted";
   return job.runner_name ?? "";
+}
+
+/** 臨時機器組的顯示名稱：`組名 機型`（機型空時只有組名）。 */
+export function poolLabel(p: PoolTag): string {
+  return p.machine ? `${p.name} ${p.machine}` : p.name;
 }
 
 /** 泳道上的文字：忙碌＝正在跑的 job 名稱，其餘是狀態。`prefix` 是 repo 與頂端不同時才有的 repo 名（畫面上用較淡的字）。 */
@@ -138,7 +145,7 @@ export function etaText(x: Eta): string | null {
   return null;
 }
 
-export type QueueJob = { name: string; count: number; url: string | null; noMatch: boolean };
+export type QueueJob = { name: string; count: number; url: string | null; noMatch: boolean; wait: string };
 export type QueueGroup = {
   key: string;
   repo: string;
@@ -163,14 +170,17 @@ export function groupQueue(items: { w: WaitingView; roster: RosterLevel }[]): Qu
       g = { key, repo: w.job.repo, workflow: w.job.workflow, jobs: [], oldest: null, attention: false };
       groups.set(key, g);
     }
-    const noMatch = roster === "Full" && w.candidates.length === 0;
-    const same = g.jobs.find((j) => j.name === w.job.job);
+    // 等臨時機器的 job 不對位自家 runner：「沒有 runner 能接」只對等自家機器的 job 成立
+    const noMatch = roster === "Full" && w.job.pool === null && w.candidates.length === 0;
+    // 同名但等的不是同一組機器（例如不同機型的 pool）要分開，不然「×n」會把另一組的需求報成第一組
+    const wait = waitLabel(w.job);
+    const same = g.jobs.find((j) => j.name === w.job.job && j.wait === wait);
     if (same) {
       same.count += 1;
       same.url = null;
       same.noMatch ||= noMatch;
     } else {
-      g.jobs.push({ name: w.job.job, count: 1, url: w.job.url, noMatch });
+      g.jobs.push({ name: w.job.job, count: 1, url: w.job.url, noMatch, wait });
     }
     if (g.oldest === null || knownSecs(w.age) > knownSecs(g.oldest)) g.oldest = w.age;
     g.attention ||= w.attention;
@@ -184,13 +194,12 @@ export function defaultSelected<T extends { selected: boolean }>(choices: T[]): 
 }
 
 function rank(r: RunnerView): number {
-  if (r.attention) return 0;
-  if (r.state === "Busy") return 1;
-  if (r.state === "Idle") return 3;
-  return 2; // Offline（沒有被判定需要注意的）
+  if (r.state === "Busy") return 0;
+  if (r.state === "Idle") return 2;
+  return 1; // Offline
 }
 
-/** 需要注意優先 → 忙碌 → 離線 → 閒置 → 名稱。回傳新陣列，不改動輸入。 */
+/** 忙碌 → 離線 → 閒置 → 名稱（離線不再排到最前面）。回傳新陣列，不改動輸入。 */
 export function sortRunners(rs: RunnerView[]): RunnerView[] {
   return [...rs].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }
@@ -206,31 +215,89 @@ export function hasSkew(snap: Snapshot): boolean {
   );
 }
 
-/** 頂端四格的計數：從「目前畫面上看得到的」runner 與排隊算，選了單一範圍時數字才會跟清單一致。 */
-export function countVisible(runners: RunnerView[], waiting: number): Summary {
-  let busy = 0;
-  let idle = 0;
-  let offline = 0;
-  for (const r of runners) {
-    if (r.state === "Busy") busy += 1;
-    else if (r.state === "Idle") idle += 1;
-    else offline += 1;
+export type PoolJob = { job: JobView; count: number; url: string | null; elapsed: Elapsed | null };
+export type PoolGroup = { tag: PoolTag; busy: number; idle: number; jobs: PoolJob[] };
+
+const byName = (a: RunnerView, b: RunnerView) => a.name.localeCompare(b.name);
+
+/**
+ * 把一個範圍的 runner 分成：自家機器的忙碌／閒置／離線（各依名稱排序），以及臨時機器的組。
+ * 臨時機器只列有在線機器的組，離線殘骸完全丟掉；組內 job 依 repo＋job 名稱合併（elapsed 取最久的，只有一個時才附連結）。
+ */
+export function splitRunners(rs: RunnerView[]): {
+  busy: RunnerView[];
+  idle: RunnerView[];
+  offline: RunnerView[];
+  pools: PoolGroup[];
+} {
+  const own = rs.filter((r) => !r.pool);
+  const groups = new Map<string, PoolGroup>();
+  for (const r of rs) {
+    if (!r.pool || typeof r.state === "object") continue;
+    let g = groups.get(r.pool.stem);
+    if (!g) {
+      g = { tag: r.pool, busy: 0, idle: 0, jobs: [] };
+      groups.set(r.pool.stem, g);
+    }
+    if (r.state === "Idle") {
+      g.idle += 1;
+      continue;
+    }
+    g.busy += 1;
+    if (!r.job) continue;
+    const same = g.jobs.find((j) => j.job.repo === r.job!.repo && j.job.job === r.job!.job);
+    if (same) {
+      same.count += 1;
+      same.url = null;
+      if (knownSecs(r.elapsed) > knownSecs(same.elapsed)) same.elapsed = r.elapsed;
+    } else {
+      g.jobs.push({ job: r.job, count: 1, url: r.job.url || null, elapsed: r.elapsed });
+    }
   }
-  const attention: Summary["attention"] = runners.some((r) => r.attention) ? "Critical" : "Ok";
-  return { busy, idle, offline, waiting, attention };
+  return {
+    busy: own.filter((r) => r.state === "Busy").sort(byName),
+    idle: own.filter((r) => r.state === "Idle").sort(byName),
+    offline: own.filter((r) => typeof r.state === "object").sort(byName),
+    pools: [...groups.values()].sort((a, b) => a.tag.stem.localeCompare(b.tag.stem)),
+  };
 }
 
-/** 標題列副標：忙碌、閒置、排隊；離線只在有的時候才出現。 */
+/** 排隊中的 job 在等什麼：臨時機器的組（組名＋機型），或自家機器。 */
+export function waitLabel(job: JobView): string {
+  return job.pool ? `等 ${poolLabel(job.pool)}` : "等自家機器";
+}
+
+/** 頂端計數：從「目前畫面上看得到的」runner 與排隊算，選了單一範圍時數字才會跟清單一致。離線的臨時機器殘骸不計。 */
+export function countVisible(
+  runners: RunnerView[],
+  waiting: number,
+): { ownBusy: number; ownOnline: number; poolBusy: number; waiting: number } {
+  let ownBusy = 0;
+  let ownOnline = 0;
+  let poolBusy = 0;
+  for (const r of runners) {
+    const online = r.state === "Busy" || r.state === "Idle";
+    if (r.pool) {
+      if (r.state === "Busy") poolBusy += 1;
+    } else if (online) {
+      ownOnline += 1;
+      if (r.state === "Busy") ownBusy += 1;
+    }
+  }
+  return { ownBusy, ownOnline, poolBusy, waiting };
+}
+
+/** 標題列副標：`自家 2/5 在忙 · 臨時 9 台在跑 · 排隊 1`；沒有臨時機器在跑時省略中段。 */
 export function summaryLine(s: Summary): string {
-  const parts = [`${s.busy} 忙碌`, `${s.idle} 閒置`];
-  if (s.offline > 0) parts.push(`${s.offline} 離線`);
-  parts.push(`${s.waiting} 排隊`);
+  const parts = [`自家 ${s.own_busy}/${s.own_online} 在忙`];
+  if (s.pool_busy > 0) parts.push(`臨時 ${s.pool_busy} 台在跑`);
+  parts.push(`排隊 ${s.waiting}`);
   return parts.join(" · ");
 }
 
-export type Dot = "busy" | "idle" | "offline" | "attention";
+export type Dot = "busy" | "idle" | "offline";
 
-/** 狀態點顏色：需要注意＝橘或紅由 attention 決定（離線且需要注意＝紅）。 */
+/** 狀態點顏色：離線不再有警告色。 */
 export function dotFor(r: RunnerView): Dot {
   if (typeof r.state === "object") return "offline";
   return r.state === "Busy" ? "busy" : "idle";
@@ -255,8 +322,9 @@ export function accountNote(status: AccountStatus): string | null {
 
 /** 選單列／app bar 計數用的文字：沒有任何 runner 時為空字串。 */
 export function trayTitleLike(s: Summary): string {
-  if (s.busy + s.idle + s.offline === 0) return "";
-  return s.waiting > 0 ? `${s.busy}▶ ${s.waiting}⏳` : `${s.busy}▶`;
+  if (s.own_online + s.own_offline + s.pool_busy === 0) return "";
+  const busy = s.own_busy + s.pool_busy;
+  return s.waiting > 0 ? `${busy}▶ ${s.waiting}⏳` : `${busy}▶`;
 }
 
 // ───────────── runner 執行歷史 ─────────────

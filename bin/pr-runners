@@ -104,12 +104,13 @@ _scan_repo() {
       # shellcheck disable=SC2016  # 單引號內的 $s 是 jq 變數，不是 shell 變數
       jobs=$(gh api "repos/$full/actions/runs/$rid/jobs?per_page=100" --paginate --jq '
         .jobs[]
+        # 臨時機器的 job 常常只帶機型標籤、沒有 self-hosted：名稱最後一段是 ≥10 碼、同時含數字與字母的
+        # 小寫英數亂數（規則 a）也算，不然沒有 admin:org 時整組臨時機器會少算或整個看不到
+        | ([ (.runner_name // "") | capture("^(?<h>.+)-(?<t>[a-z0-9]{10,})$") ] | .[0]) as $pc
         | select(.status=="in_progress"
-                 and ((.labels//[])|index("self-hosted"))
                  and .runner_name
-                 # Blacksmith 的雲端 VM 不是自家 runner（機型命名 blacksmith-<N>vcpu-…）
-                 and ((((.labels//[]) | map(ascii_downcase) | any(test("^blacksmith-[0-9]+vcpu-")))
-                       or ((.runner_name // "") | ascii_downcase | test("^blacksmith-[0-9]+vcpu-"))) | not))
+                 and (((.labels//[])|index("self-hosted"))
+                      or ($pc != null and ($pc.t | test("[0-9]")) and ($pc.t | test("[a-z]")))))
         | (if .started_at then (now-(.started_at|fromdateiso8601)) else 0 end) as $s
         # 負值＝GitHub 回的 started_at 在未來（GitHub 端時間戳偏移），算不出已跑多久，
         # 標 ⚠? 而不是印出 -51m-5s 這種誤導人的數字；呼叫端看到 ⚠? 會在底部加註。
@@ -207,9 +208,12 @@ _run_rows() {
     (if $res=="success" then "✓" elif $res=="failure" then "✗"
      elif $res=="cancelled" then "⊘" elif $res=="skipped" then "–"
      elif $st=="in_progress" then "▶" else "…" end) as $icon |
-    ((((.labels//[]) | map(ascii_downcase) | any(test("^blacksmith-[0-9]+vcpu-")))
-      or ((.runner_name // "") | ascii_downcase | test("^blacksmith-[0-9]+vcpu-")))) as $bs |
-    (if $bs then "☁ Blacksmith"
+    # 臨時機器（名稱最後一段是 ≥10 碼、同時含數字與字母的小寫英數亂數）：只寫「組名 機型」。
+    # 只看這一個 job 的名稱（規則 a）；同組其他 runner（規則 b）與 job label（規則 c）在這裡看不到。
+    ([ (.runner_name // "") | capture("^(?<h>.+)-(?<t>[a-z0-9]{10,})$") ] | .[0]) as $pc |
+    (if $pc != null and ($pc.t | test("[0-9]")) and ($pc.t | test("[a-z]"))
+     then "☁ " + ($pc.h | ascii_downcase | sub("-"; " ")) else null end) as $pool |
+    (if $pool != null then $pool
      elif ((.labels//[])|index("self-hosted"))
      then (.runner_name // "…待指派") else "☁️ hosted" end) as $runner |
     (if (.started_at and .completed_at)
@@ -280,15 +284,18 @@ render() {
   #   P 行＝本 PR job（rows）：src=P runner epoch job hm（bucket 用不到）
   runners=$(
     { [ -n "$busymap" ] && awk -F'\t' '{print "B\t"$2"\t"$1"\t"$3"\t"$4}' <<<"$busymap"; }
-    awk -F'\t' 'NF>=8 && $5!="" && $5!="…待指派" && $5!="☁️ hosted" && $5!="☁ Blacksmith" {print "P\t"$5"\t"$2"\t"$6"\t"$8}' <<<"$rows"
+    awk -F'\t' 'NF>=8 && $5!="" && $5!="…待指派" && index($5,"☁")!=1 {print "P\t"$5"\t"$2"\t"$6"\t"$8}' <<<"$rows"
   )
-  runners=$(awk -F'\t' '
+  # 臨時機器（名稱最後一段是亂數）不是自家 runner：跨 repo 忙碌快照（B 行）裡的也要丟掉，不然亂數名稱會漏進這份名冊
+  runners=$(awk -F'\t' "$POOL_AWK"'
     $1=="B" { r=$2; seen[r]=1; busy[r]=1
               b[r]=(b[r]=="" ? "" : b[r]" · ") "[" $3 "] " $4 " (" $5 ")" }
     $1=="P" { r=$2; seen[r]=1
               if (($3+0)>(late[r]+0)) { late[r]=$3; lj[r]=$4; lh[r]=$5 } }
     END {
+      for (r in seen) pool_seed(r)
       for (r in seen) {
+        if (pool_stem(r) != "") continue
         if (busy[r]) printf "0\t%s\t🟢\t忙碌\t← %s\n", r, b[r]
         else         printf "1\t%s\t⚪\t閒置\t最近：%s @ %s\n", r, (lj[r]==""?"—":lj[r]), (lh[r]==""?"—":lh[r])
       }
@@ -324,6 +331,32 @@ render() {
 }
 
 # ── --runners：不綁 PR，只列/監控 runner 目前正在跑的工作（跨 org）──────────
+# 臨時機器分類（與 crates/rules/src/fleet.rs 同一條規則，案例表 tests/fixtures/runner-names.tsv 兩邊共用）。
+# 名稱最後一段（以 - 切）≥10 碼、只含小寫英數，而且 (a) 同時含數字與字母，或 (b) 組鍵與另一台符合 (a) 的名稱相同。
+# 規則 (c)（組鍵等於排隊 job 的 label）需要排隊 job 的 labels，這支工具沒有抓，不實作。
+# 用法：先對全部名稱呼叫 pool_seed(n)，再用 pool_stem(n)：臨時機器回傳小寫組鍵，自家機器回傳空字串。
+POOL_AWK='
+function tailof(n,   k, p) { k = split(n, p, "-"); return (k >= 2) ? p[k] : "" }
+function shaped(n,   t) {
+  t = tailof(n)
+  return (length(t) >= 10 && length(n) - length(t) - 1 > 0 && t !~ /[^abcdefghijklmnopqrstuvwxyz0123456789]/)
+}
+function stemof(n,   t) { t = tailof(n); return tolower(substr(n, 1, length(n) - length(t) - 1)) }
+function mixed(n,   t) { t = tailof(n); return (t ~ /[0-9]/ && t ~ /[abcdefghijklmnopqrstuvwxyz]/) }
+function pool_seed(n) { if (shaped(n) && mixed(n)) seeded[stemof(n)] = 1 }
+function pool_stem(n) { return (shaped(n) && (mixed(n) || (stemof(n) in seeded))) ? stemof(n) : "" }
+function pool_disp(st,   i) { i = index(st, "-"); return i ? substr(st, 1, i - 1) " " substr(st, i + 1) : st }
+# 同一組的 job 摘要最多列 3 個，其餘「… 另外 N 個」
+function pool_add(st, text) {
+  gjobn[st]++
+  if (gjobn[st] <= 3) gjobs[st] = (gjobs[st] == "" ? "" : gjobs[st] " · ") text
+}
+function pool_jobs(st) {
+  if (gjobn[st] == 0) return ""
+  return "  ← " gjobs[st] (gjobn[st] > 3 ? " …另外 " (gjobn[st] - 3) " 個" : "")
+}
+'
+
 render_runners() {
   # org 偵測（有序 fallback）：--repo owner[/name] > $PR_RUNNERS_ORG 環境變數 >
   # 當前 git repo 的 owner。全部落空（例如在非 git repo 目錄且沒設任何來源）→ 明確報錯，
@@ -351,22 +384,26 @@ render_runners() {
     if [ -z "$busymap" ]; then
       printf '  \033[2m目前沒有任何 self-hosted runner 在跑 job\033[0m\n'
     else
-      awk -F'\t' '
+      awk -F'\t' "$POOL_AWK"'
         { r=$2; job[r]=(job[r]==""?"":job[r]" · ") "[" $1 " " $5 "] " $3 " (" $4 ")"
           n=$4; gsub(/m.*/,"",n); if((n+0)>max[r]) max[r]=n+0 }
-        END { for(r in job) printf "%d\t%s\t%s\n", max[r], r, job[r] }' <<<"$busymap" \
-      | sort -t$'\t' -k1,1nr | awk -F'\t' '{printf "  🟢 %-22s ← %s\n",$2,$3}'
+        END {
+          for (r in job) pool_seed(r)
+          for (r in job) {
+            st = pool_stem(r)
+            if (st == "") { printf "%d\t🟢\t%s\t← %s\n", max[r], r, job[r]; continue }
+            gbusy[st]++
+            if (max[r] > gmax[st]) gmax[st] = max[r]
+            pool_add(st, job[r])
+          }
+          for (st in gbusy) printf "%d\t☁\t%s\t%d 在跑%s\n", gmax[st], pool_disp(st), gbusy[st], pool_jobs(st)
+        }' <<<"$busymap" \
+      | sort -t$'\t' -k1,1nr | awk -F'\t' '{printf "  %s %-22s %s\n",$2,$3,$4}'
     fi
     printf '  \033[2m只顯示「正在跑」的 runner；要看閒置/離線需授權：gh auth refresh -h github.com -s admin:org\033[0m\n'
     skew_note "$busymap"
     return
   fi
-
-  # 名冊拿到了（所以不是缺權限）才濾掉 Blacksmith 的雲端 VM：ci-burst 溢出時它們也會出現在
-  # org 名冊（名稱 blacksmith-<N>vcpu-…），用完即丟、不是自家 runner，留著會變成一排「離線的
-  # runner」。先判斷空名冊、後過濾：一份只有 VM 的名冊是「沒有自家 runner」，不是 403。
-  # 它們的 job 在 PR 檢視另列為「☁ Blacksmith」。
-  roster=$(grep -viE '^blacksmith-[0-9]+vcpu-' <<<"$roster" || true)
 
   # ── 完整名冊驅動：roster 決定「有哪些 runner + 在線/離線/忙碌」，busymap 補 job 細節 ──
   # 兩路餵進同一個 awk：
@@ -380,31 +417,45 @@ render_runners() {
     fi
     true   # 保證 command substitution 收尾 exit 0（否則 busymap 空時 set -e 會中止）
   )
-  # 排序鍵：0=忙碌 1=閒置 2=離線；同組再依名稱。busy 但抓不到 job（工作在無法讀取的
-  # repo）仍標忙碌、註明。
-  merged=$(awk -F'\t' '
+  # 排序鍵：0=忙碌 1=閒置 2=臨時機器（一組一行）3=自家離線（最後合成一行）。
+  # 臨時機器：組內有任一台在線就印一行「組名 機型  N 在跑」，離線的殘骸完全不印；busy 但抓不到 job
+  # （工作在無法讀取的 repo）仍標忙碌、註明。
+  merged=$(awk -F'\t' "$POOL_AWK"'
     $1=="R" { n=$2; status[n]=$3; busy[n]=$4; seen[n]=1 }
     $1=="J" { r=$2; job[r]=(job[r]==""?"":job[r]" · ") $3 }
     END {
+      for (n in seen) pool_seed(n)
       for (n in seen) {
-        if (status[n]=="offline")   printf "2\t🔴\t%s\t離線\n", n
+        st = pool_stem(n)
+        if (st != "") {
+          if (status[n]=="offline") continue
+          gonline[st] = 1
+          if (busy[n]=="true") gbusy[st]++
+          if (job[n]!="") pool_add(st, job[n])
+          continue
+        }
+        if (status[n]=="offline")   printf "3\t🔴\t%s\t離線\n", n
         else if (busy[n]=="true")   printf "0\t🟢\t%s\t%s\n", n, (job[n]!="" ? "← " job[n] : "← 忙碌中（工作在無法讀取的 repo）")
         else                        printf "1\t⚪\t%s\t閒置\n", n
       }
+      for (st in gonline) printf "2\t☁\t%s\t%d 在跑%s\t%d\n", pool_disp(st), gbusy[st], pool_jobs(st), gbusy[st]
     }' <<<"$merged" | sort -t$'\t' -k1,1 -k3,3)
 
-  local total busy_n idle_n off_n
-  # grep -c，不是 wc -l：空的 merged 經 here-string 是一行空字串，wc 會數成 1 台
-  total=$(grep -c . <<<"$merged" || true)
+  local busy_n idle_n pool_n off_list
   busy_n=$(awk -F'\t' '$1==0' <<<"$merged" | grep -c . || true)
   idle_n=$(awk -F'\t' '$1==1' <<<"$merged" | grep -c . || true)
-  off_n=$(awk  -F'\t' '$1==2' <<<"$merged" | grep -c . || true)
-  printf '\033[2m共 %s 台：🟢%s 忙碌  ⚪%s 閒置  🔴%s 離線\033[0m\n' "$total" "$busy_n" "$idle_n" "$off_n"
-  if [ -n "$merged" ]; then
-    awk -F'\t' '{printf "  %s %-22s %s\n",$2,$3,$4}' <<<"$merged"
+  pool_n=$(awk -F'\t' '$1==2 {n+=$5} END {print n+0}' <<<"$merged")
+  off_list=$(awk -F'\t' '$1==3 {printf "%s%s", (c++ ? "、" : ""), $3}' <<<"$merged")
+  local stat
+  stat=$(printf '自家 %s 台：🟢%s 忙碌  ⚪%s 閒置' "$((busy_n + idle_n))" "$busy_n" "$idle_n")
+  [ "$pool_n" -gt 0 ] && stat="$stat · 臨時 $pool_n 在跑"
+  printf '\033[2m%s\033[0m\n' "$stat"
+  if [ -n "$(awk -F'\t' '$1<=2' <<<"$merged")" ]; then
+    awk -F'\t' '$1<=2 {printf "  %s %-22s %s\n",$2,$3,$4}' <<<"$merged"
   else
-    printf '  \033[2m目前沒有任何 self-hosted runner（名冊裡只有 Blacksmith 的雲端 VM）\033[0m\n'
+    printf '  \033[2m目前沒有任何自家 runner\033[0m\n'
   fi
+  [ -n "$off_list" ] && printf '  \033[2m離線：%s\033[0m\n' "$off_list"
   skew_note "$busymap"
 }
 

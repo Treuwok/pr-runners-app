@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import dev from "./dev-snapshot.json";
 import type { AccountView } from "./generated/AccountView";
+import type { JobView } from "./generated/JobView";
 import type { RunnerView } from "./generated/RunnerView";
 import type { Snapshot } from "./generated/Snapshot";
 import type { JobRecord } from "./generated/JobRecord";
 import type { WaitingView } from "./generated/WaitingView";
 import type { Summary } from "./generated/Summary";
 import {
+  splitRunners,
+  waitLabel,
   accountNote,
   dotFor,
   formatClock,
@@ -50,7 +53,7 @@ function runner(over: Partial<RunnerView> = {}): RunnerView {
     group: null,
     job: null,
     elapsed: null,
-    attention: false,
+    pool: null,
     can_take: null,
     ...over,
   };
@@ -66,7 +69,7 @@ const job = {
   url: "https://github.com/x",
   runner_name: "r",
   hosted: false,
-  blacksmith: false,
+  pool: null,
   typical_secs: null as number | null,
 };
 
@@ -240,16 +243,15 @@ describe("defaultSelected", () => {
 });
 
 describe("sortRunners", () => {
-  it("需要注意 → 忙碌 → 離線 → 閒置 → 名稱，且不改動輸入", () => {
+  it("忙碌 → 離線 → 閒置 → 名稱（離線不再排最前面），且不改動輸入", () => {
     const input = [
       runner({ name: "idle-b", state: "Idle" }),
       runner({ name: "off", state: { Offline: { since: "Unknown" } } }),
       runner({ name: "busy", state: "Busy" }),
       runner({ name: "idle-a", state: "Idle" }),
-      runner({ name: "bad", state: { Offline: { since: "Unknown" } }, attention: true }),
     ];
     const copy = [...input];
-    expect(sortRunners(input).map((r) => r.name)).toEqual(["bad", "busy", "off", "idle-a", "idle-b"]);
+    expect(sortRunners(input).map((r) => r.name)).toEqual(["busy", "off", "idle-a", "idle-b"]);
     expect(input).toEqual(copy);
   });
   it("空陣列", () => {
@@ -277,10 +279,10 @@ function snapshotWith(r: RunnerView[], waitingAge: "Untrusted" | { Known: { secs
     ],
   };
   return {
-    schema_version: 1,
+    schema_version: 2,
     generated_at: NOW,
     accounts: [acct],
-    summary: { busy: 0, idle: 0, offline: 0, waiting: 0, attention: "Ok" },
+    summary: { own_busy: 0, own_online: 0, own_offline: 0, pool_busy: 0, waiting: 0, attention: "Ok", stale: false },
   };
 }
 
@@ -295,36 +297,47 @@ describe("hasSkew", () => {
   });
 });
 
+const POOL = { stem: "pool-8x-linux", name: "pool", machine: "8x-linux" };
+
 describe("countVisible", () => {
-  it("依狀態分別計數，排隊數照傳入的（已篩選的）數量", () => {
+  it("自家與臨時機器分開計數，排隊數照傳入的（已篩選的）數量；離線的都不算", () => {
     const rs = [
       runner({ state: "Busy" }),
       runner({ state: "Busy" }),
       runner({ state: "Idle" }),
       runner({ state: { Offline: { since: "Unknown" } } }),
+      runner({ state: "Busy", pool: POOL }),
+      runner({ state: { Offline: { since: "Unknown" } }, pool: POOL }),
     ];
-    expect(countVisible(rs, 3)).toEqual({ busy: 2, idle: 1, offline: 1, waiting: 3, attention: "Ok" });
+    expect(countVisible(rs, 3)).toEqual({ ownBusy: 2, ownOnline: 3, poolBusy: 1, waiting: 3 });
   });
   it("只算傳進來的 runner：篩掉的範圍不會出現在數字裡", () => {
-    expect(countVisible([], 0)).toEqual({ busy: 0, idle: 0, offline: 0, waiting: 0, attention: "Ok" });
-  });
-  it("有需要注意的 runner 才標 Critical", () => {
-    const bad = runner({ state: { Offline: { since: "Unknown" } }, attention: true });
-    expect(countVisible([bad], 0).attention).toBe("Critical");
+    expect(countVisible([], 0)).toEqual({ ownBusy: 0, ownOnline: 0, poolBusy: 0, waiting: 0 });
   });
 });
 
 describe("summaryLine / trayTitleLike", () => {
-  const s = (over: Partial<Summary>): Summary => ({ busy: 0, idle: 0, offline: 0, waiting: 0, attention: "Ok", ...over });
-  it("summaryLine：離線只在有的時候出現，排隊永遠在最後", () => {
-    expect(summaryLine(s({ busy: 2, idle: 2, offline: 1, waiting: 7 }))).toBe("2 忙碌 · 2 閒置 · 1 離線 · 7 排隊");
-    expect(summaryLine(s({ busy: 4, idle: 1, waiting: 7 }))).toBe("4 忙碌 · 1 閒置 · 7 排隊");
-    expect(summaryLine(s({}))).toBe("0 忙碌 · 0 閒置 · 0 排隊");
+  const s = (over: Partial<Summary>): Summary => ({
+    own_busy: 0,
+    own_online: 0,
+    own_offline: 0,
+    pool_busy: 0,
+    waiting: 0,
+    attention: "Ok",
+    stale: false,
+    ...over,
+  });
+  it("summaryLine：沒有臨時機器在跑時省略中段，排隊永遠在最後", () => {
+    expect(summaryLine(s({ own_busy: 2, own_online: 5, pool_busy: 9, waiting: 1 }))).toBe("自家 2/5 在忙 · 臨時 9 台在跑 · 排隊 1");
+    expect(summaryLine(s({ own_busy: 4, own_online: 5, waiting: 7 }))).toBe("自家 4/5 在忙 · 排隊 7");
+    expect(summaryLine(s({}))).toBe("自家 0/0 在忙 · 排隊 0");
   });
   it("計數文字與 Rust 端 tray_title 一致", () => {
-    expect(trayTitleLike(s({ busy: 2, idle: 1, waiting: 1 }))).toBe("2▶ 1⏳");
-    expect(trayTitleLike(s({ idle: 3 }))).toBe("0▶");
+    expect(trayTitleLike(s({ own_busy: 2, own_online: 3, waiting: 1 }))).toBe("2▶ 1⏳");
+    expect(trayTitleLike(s({ own_online: 3 }))).toBe("0▶");
+    expect(trayTitleLike(s({ own_busy: 1, own_online: 1, pool_busy: 2 }))).toBe("3▶");
     expect(trayTitleLike(s({}))).toBe("");
+    expect(trayTitleLike(s({ own_offline: 1 }))).toBe("0▶");
   });
 });
 
@@ -353,13 +366,15 @@ describe("dev-snapshot.json（?mock=1 用）", () => {
   const runners = snap.accounts.flatMap((a) => a.scopes.flatMap((s) => s.runners));
   it("summary 與名冊一致，免得示意資料悄悄漂移", () => {
     const count = (f: (r: RunnerView) => boolean) => runners.filter(f).length;
-    expect(snap.summary.busy).toBe(count((r) => r.state === "Busy"));
-    expect(snap.summary.idle).toBe(count((r) => r.state === "Idle"));
-    expect(snap.summary.offline).toBe(count((r) => typeof r.state === "object"));
+    const own = (r: RunnerView) => r.pool === null;
+    expect(snap.summary.own_busy).toBe(count((r) => own(r) && r.state === "Busy"));
+    expect(snap.summary.own_online).toBe(count((r) => own(r) && (r.state === "Busy" || r.state === "Idle")));
+    expect(snap.summary.own_offline).toBe(count((r) => own(r) && typeof r.state === "object"));
+    expect(snap.summary.pool_busy).toBe(count((r) => !own(r) && r.state === "Busy"));
     expect(snap.summary.waiting).toBe(snap.accounts.flatMap((a) => a.scopes.flatMap((s) => s.waiting)).length);
   });
-  it("排序把需要注意的離線 runner 放最前面", () => {
-    expect(sortRunners(runners)[0].name).toBe("vps-2");
+  it("排序：忙碌的在前，離線不再排最前面", () => {
+    expect(sortRunners(runners)[0].state).toBe("Busy");
   });
 });
 
@@ -424,12 +439,98 @@ describe("runner 執行歷史", () => {
 });
 
 describe("jobWhere", () => {
-  it("Blacksmith、GitHub-hosted、自家 runner 三者分開，Blacksmith 先判斷", () => {
-    expect(jobWhere({ blacksmith: true, hosted: false, runner_name: "blacksmith-8vcpu-ubuntu-2404-abc" })).toBe("☁ Blacksmith");
-    expect(jobWhere({ blacksmith: false, hosted: true, runner_name: "GitHub Actions 3" })).toBe("GitHub-hosted");
-    expect(jobWhere({ blacksmith: false, hosted: false, runner_name: "netcup-debian13-vps" })).toBe("netcup-debian13-vps");
+  it("臨時機器（只寫組名與機型）、GitHub-hosted、自家 runner 三者分開，臨時機器先判斷", () => {
+    expect(jobWhere({ pool: POOL, hosted: false, runner_name: "pool-8x-linux-q7k2m9x4b1c8d3e5" })).toBe("pool 8x-linux");
+    expect(jobWhere({ pool: { stem: "pool", name: "pool", machine: "" }, hosted: false, runner_name: null })).toBe("pool");
+    expect(jobWhere({ pool: null, hosted: true, runner_name: "GitHub Actions 3" })).toBe("GitHub-hosted");
+    expect(jobWhere({ pool: null, hosted: false, runner_name: "netcup-debian13-vps" })).toBe("netcup-debian13-vps");
   });
   it("排隊中、還沒有 runner 名稱時不顯示", () => {
-    expect(jobWhere({ blacksmith: false, hosted: false, runner_name: null })).toBe("");
+    expect(jobWhere({ pool: null, hosted: false, runner_name: null })).toBe("");
+  });
+});
+
+describe("splitRunners", () => {
+  const poolJob = (name: string, over: Partial<JobView> = {}): JobView => ({ ...job, job: name, pool: POOL, hosted: false, ...over });
+  const elapsed = (secs: number) => ({ Known: { secs } });
+  const OFF = { Offline: { since: "Unknown" as const } };
+  it("自家機器依狀態分三堆（依名稱排序）；臨時機器歸組、離線殘骸完全丟掉", () => {
+    const rs = [
+      runner({ name: "own-busy-b", state: "Busy" }),
+      runner({ name: "own-busy-a", state: "Busy" }),
+      runner({ name: "own-idle", state: "Idle" }),
+      runner({ name: "own-off", state: OFF }),
+      runner({ name: "pool-1", state: "Busy", pool: POOL, job: poolJob("build"), elapsed: elapsed(60) }),
+      runner({ name: "pool-2", state: "Busy", pool: POOL, job: poolJob("build"), elapsed: elapsed(300) }),
+      runner({ name: "pool-3", state: "Idle", pool: POOL }),
+      runner({ name: "pool-4", state: OFF, pool: POOL }),
+      // 另一組：只剩離線殘骸 → 整組不出現
+      runner({ name: "gone-1", state: OFF, pool: { stem: "gone-2x", name: "gone", machine: "2x" } }),
+    ];
+    const s = splitRunners(rs);
+    expect(s.busy.map((r) => r.name)).toEqual(["own-busy-a", "own-busy-b"]);
+    expect(s.idle.map((r) => r.name)).toEqual(["own-idle"]);
+    expect(s.offline.map((r) => r.name)).toEqual(["own-off"]);
+    expect(s.pools).toHaveLength(1);
+    expect(s.pools[0]).toMatchObject({ tag: POOL, busy: 2, idle: 1 });
+  });
+  it("同 repo＋job 名稱合併成 count，elapsed 取最久的；只有一個時才有連結", () => {
+    const rs = [1, 2, 3].map((i) =>
+      runner({ name: `p${i}`, state: "Busy", pool: POOL, job: poolJob("build"), elapsed: elapsed(i * 100) }),
+    ).concat([
+      runner({ name: "p4", state: "Busy", pool: POOL, job: poolJob("lint", { url: "https://github.com/lint" }), elapsed: elapsed(30) }),
+    ]);
+    const [g] = splitRunners(rs).pools;
+    expect(g.jobs.map((j) => [j.job.job, j.count, j.url])).toEqual([
+      ["build", 3, null],
+      ["lint", 1, "https://github.com/lint"],
+    ]);
+    expect(g.jobs[0].elapsed).toEqual(elapsed(300));
+  });
+  it("沒有任何機器", () => {
+    expect(splitRunners([])).toEqual({ busy: [], idle: [], offline: [], pools: [] });
+  });
+});
+
+describe("waitLabel", () => {
+  it("等臨時機器：組名＋機型；機型空時只寫組名；否則等自家機器", () => {
+    expect(waitLabel({ ...job, pool: POOL })).toBe("等 pool 8x-linux");
+    expect(waitLabel({ ...job, pool: { stem: "pool", name: "pool", machine: "" } })).toBe("等 pool");
+    expect(waitLabel({ ...job, pool: null })).toBe("等自家機器");
+  });
+  it("groupQueue：等臨時機器的 job 不算「沒有 runner 能接」，並帶上等什麼", () => {
+    const pooled: WaitingView = {
+      job: { ...job, state: "Queued", pool: POOL, job: "e2e", workflow: "ci", key: "p/1" },
+      age: { Known: { secs: 700 } },
+      attention: true,
+      candidates: [],
+    };
+    const own: WaitingView = { ...pooled, job: { ...pooled.job, pool: null, job: "mac", key: "p/2" } };
+    const [g] = groupQueue([
+      { w: pooled, roster: "Full" },
+      { w: own, roster: "Full" },
+    ]);
+    expect(g.jobs.map((j) => [j.name, j.noMatch, j.wait])).toEqual([
+      ["e2e", false, "等 pool 8x-linux"],
+      ["mac", true, "等自家機器"],
+    ]);
+  });
+  it("groupQueue：同名但等不同機器的 job 不合併成同一個「×n」", () => {
+    const mk = (key: string, pool: typeof POOL | null): WaitingView => ({
+      job: { ...job, state: "Queued", pool, job: "e2e", workflow: "ci", key },
+      age: { Known: { secs: 100 } },
+      attention: false,
+      candidates: [],
+    });
+    const big = { stem: "pool-16x-linux", name: "pool", machine: "16x-linux" };
+    const [g] = groupQueue([
+      { w: mk("a", POOL), roster: "Full" },
+      { w: mk("b", big), roster: "Full" },
+      { w: mk("c", POOL), roster: "Full" },
+    ]);
+    expect(g.jobs.map((j) => [j.count, j.wait])).toEqual([
+      [2, "等 pool 8x-linux"],
+      [1, "等 pool 16x-linux"],
+    ]);
   });
 });

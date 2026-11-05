@@ -5,7 +5,7 @@
   import QueueSection from "$lib/components/QueueSection.svelte";
   import ScopeSection from "$lib/components/ScopeSection.svelte";
   import StatusFooter from "$lib/components/StatusFooter.svelte";
-  import { countVisible, dominantRepo, groupQueue, maxElapsedSecs, repoHues, repoName, summaryLine } from "$lib/view";
+  import { countVisible, dominantRepo, groupQueue, maxElapsedSecs, repoHues, repoName, splitRunners } from "$lib/view";
 
   let {
     snapshot,
@@ -44,22 +44,29 @@
   const groups = $derived(groupQueue(waiting));
   // 四格與下方清單用同一份（已依範圍篩選的）資料，選了單一範圍時數字才會對得上
   const sum = $derived(countVisible(runners, waiting.length));
-  // 顏色只給真的需要注意的：排隊超過門檻＝琥珀、離線超過門檻＝紅
+  // 顏色只給真的需要注意的：排隊超過門檻＝琥珀（離線不再有警告色）
   const queueWarn = $derived(waiting.some(({ w }) => w.attention));
-  const offlineBad = $derived(runners.some((r) => r.attention));
+  const hasPools = $derived(splitRunners(runners).pools.length > 0);
+  // 單一範圍而且有臨時機器時，排隊放在右欄（臨時機器下面）；多個範圍時放在所有範圍之後
+  const queueInColumn = $derived(scopes.length === 1 && hasPools);
 </script>
 
-{#if dominant}
-  <div class="ctx"><i class="rdot rc{hues.get(dominant) ?? 0}" aria-hidden="true"></i><b>{dominant}</b></div>
-{/if}
-<div class="stats" role="group" aria-label={summaryLine(sum)}>
-  <div class="stat run"><b>{sum.busy}</b><span>忙碌</span></div>
-  <div class="stat"><b>{sum.idle}</b><span>閒置</span></div>
-  <div class="stat" class:warn={queueWarn}><b>{sum.waiting}</b><span>排隊</span></div>
-  <div class="stat" class:bad={offlineBad}><b>{sum.offline}</b><span>離線</span></div>
+<div class="runners">
+  {#if dominant}
+    <div class="ctx"><i class="rdot rc{hues.get(dominant) ?? 0}" aria-hidden="true"></i><b>{dominant}</b></div>
+  {/if}
+  <div class="stats" style:--n={hasPools ? 3 : 2} role="group" aria-label="自家 {sum.ownBusy}/{sum.ownOnline} 在忙">
+    <div class="stat run"><b>{sum.ownBusy}<small>/{sum.ownOnline}</small></b><span>自家機器在忙</span></div>
+    {#if hasPools}
+      <div class="stat run"><b>{sum.poolBusy}</b><span>臨時機器在跑</span></div>
+    {/if}
+    <div class="stat" class:warn={queueWarn}><b>{sum.waiting}</b><span>排隊</span></div>
+  </div>
+  {#each scopes as { id, s } (id)}
+    <ScopeSection scope={s} {dominant} {maxSecs} {hues} showTitle={scopes.length > 1} {limit} {onmore} {onopen}>
+      {#if queueInColumn}<QueueSection {groups} total={waiting.length} {dominant} />{/if}
+    </ScopeSection>
+  {/each}
+  {#if !queueInColumn}<QueueSection {groups} total={waiting.length} {dominant} />{/if}
+  <StatusFooter {snapshot} {onrelogin} />
 </div>
-{#each scopes as { id, s } (id)}
-  <ScopeSection scope={s} {dominant} {maxSecs} {hues} showTitle={scopes.length > 1} {limit} {onmore} {onopen} />
-{/each}
-<QueueSection {groups} total={waiting.length} {dominant} />
-<StatusFooter {snapshot} {onrelogin} />
