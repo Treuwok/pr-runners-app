@@ -413,3 +413,28 @@ export function backfillNote(r: BackfillReport): string {
   const base = `查了 ${r.repos_checked} 個 repo、${r.runs_checked} 次執行，補到 ${r.added} 筆`;
   return r.partial ? `${base}（有些 repo 查不到，可能是權限或網路）` : base;
 }
+
+// ───────────── 平台 ─────────────
+
+export type Platform = "mac" | "windows" | "android" | "ios";
+
+/** 行動版（手機：一欄、底部導覽、下拉重新整理、前景／背景切換）。 */
+export const isMobile = (p: Platform): boolean => p === "android" || p === "ios";
+
+/** 桌面版（有系統匣小視窗、主視窗、置頂與透明度設定）。 */
+export const isDesktop = (p: Platform): boolean => !isMobile(p);
+
+/**
+ * 判斷平台：優先用 Tauri 的作業系統名稱（`platform()` 的回傳值）；沒有時（瀏覽器預覽）看 userAgent。
+ * iPad 的 Safari 可能自稱 Macintosh，但 Tauri 的 `platform()` 會直接回 `ios`，所以 App 裡不會判錯。
+ */
+export function detectPlatform(osName: string | null, userAgent: string): Platform {
+  if (osName) {
+    if (osName === "ios" || osName === "android" || osName === "windows") return osName;
+    return "mac";
+  }
+  if (/iphone|ipad|ipod/i.test(userAgent)) return "ios";
+  if (/android/i.test(userAgent)) return "android";
+  if (/windows/i.test(userAgent)) return "windows";
+  return "mac";
+}

@@ -66,7 +66,7 @@ pr-runners --help
 
 ## App（第一版）
 
-除了這支終端機工具，這個 repo 也在長出一個 **Mac 選單列＋Windows 系統匣＋Android** 的唯讀 App（Rust 核心＋Tauri 2＋Svelte）：用自己的 GitHub 帳號登入，一眼看到所有 self-hosted runner 在跑哪個 repo／workflow、有沒有東西卡住，以及排隊中的 job 哪些 runner 能接。
+除了這支終端機工具，這個 repo 也在長出一個 **Mac 選單列＋Windows 系統匣＋Android＋iOS（iPhone）** 的唯讀 App（Rust 核心＋Tauri 2＋Svelte）：用自己的 GitHub 帳號登入，一眼看到所有 self-hosted runner 在跑哪個 repo／workflow、有沒有東西卡住，以及排隊中的 job 哪些 runner 能接。
 
 ```text
 crates/rules   純規則（時間可信度、排隊對位、需要注意；無 I/O，可編 wasm32）
@@ -79,6 +79,7 @@ app/           Tauri 2 專案（前端 Svelte 在 app/src，Rust 外殼在 app/s
 - Rust（edition 2024；`rustup target add wasm32-unknown-unknown` 供 `make check` 用）、pnpm、Node
 - Mac 版：Xcode Command Line Tools
 - Windows 版：Visual Studio Build Tools（「使用 C++ 的桌面開發」）、WebView2 執行階段（Windows 10／11 通常已內建）。必須在 Windows 上建置
+- iOS 版（只能在 Mac 上建置，只做 iPhone）：完整 Xcode、`xcodegen`、CocoaPods；`rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios`。簽章用的 Team ID **不寫進 repo**，用環境變數 `APPLE_DEVELOPMENT_TEAM`（Xcode 裡登入的 Apple 帳號底下的 Team ID）
 - Android 版：Android SDK／NDK 28.2.13676358、Android Studio 內建的 JDK 21（不要用系統預設的 JDK 25 跑 Gradle）。`source scripts/android-env.sh` 會設好 `ANDROID_HOME`、`NDK_HOME`、`JAVA_HOME`；另需 `rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android`
 
 ### GitHub App 與 client ID
@@ -114,7 +115,39 @@ cd app; pnpm install; pnpm tauri build          # 開發用 pnpm tauri dev
 source scripts/android-env.sh
 cd app && pnpm tauri android build --debug --apk --target aarch64
 adb install -r src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+
+# iOS（模擬器）。gen/apple 的 project.yml 等已 commit；Xcode 專案（.xcodeproj）不進 repo（會被寫入你的 Team ID），
+# clone 之後先 pnpm tauri ios init --ci 產生它（可重複執行，不會覆寫 project.yml）
+export APPLE_DEVELOPMENT_TEAM=<你的 Team ID>
+cd app && pnpm tauri ios init --ci && pnpm tauri ios build --debug --target aarch64-sim --ci
+xcrun simctl boot "iPhone 17" && xcrun simctl install booted src-tauri/gen/apple/build/arm64-sim/pr-runners.app
+xcrun simctl launch booted com.treuwok.prrunners
+
+# iOS（實機）：接上 iPhone、在 Xcode 開 gen/apple 專案選你的裝置，或 pnpm tauri ios dev
+# iOS（TestFlight）：封存並匯出 .ipa，再用 Xcode Organizer 或 Transporter 上傳到 App Store Connect。
+# 每次上傳的 build 編號（CFBundleVersion）不能重複，用 --config 帶一個比上次大的數字
+pnpm tauri ios build --export-method app-store-connect --ci \
+  --config '{"bundle":{"iOS":{"bundleVersion":"2"}}}'
 ```
+
+**iOS 的 client ID 要用 `app/.cargo/config.toml` 注入，不能只 `export`。** `pnpm tauri ios build` 會清掉環境變數，Rust 編譯那一步看不到 `PR_RUNNERS_GITHUB_CLIENT_ID`，編出來的 App 登入頁會顯示「此版本未設定 GitHub App」。改在 `app/.cargo/config.toml` 寫（這個檔案已在 `.gitignore`，不要 commit）：
+
+```toml
+[env]
+PR_RUNNERS_GITHUB_CLIENT_ID = "<pr-runners-dev 的 client ID>"
+PR_RUNNERS_GITHUB_APP_SLUG = "pr-runners-dev"
+```
+
+建完後可以用 `strings -a <封存檔>/Products/Applications/pr-runners.app/pr-runners | grep -c <client ID>` 確認有編進去（要大於 0）再上傳。
+
+iOS 版與 Android 版的差別與限制：
+
+- 沒有選單列／系統匣與小視窗；介面與 Android 共用一欄版面（底部導覽、下拉重新整理），樣式用 iOS 系統色與系統字型（`app/src/styles/ios.css`）。
+- token 存在 iOS 的 Data Protection 金鑰庫（`protected`）。**App 必須用 provisioning profile 簽章**，沒簽章會得到 `-34018`（缺少 entitlement）；token 不同步到 iCloud。
+- 進背景會被系統凍結，不能背景輪詢；回前景會立刻刷新（與 Android 相同）。
+- Bundle ID 是 `com.treuwok.prrunners`，要在你自己的 Apple Developer 帳號下註冊；TestFlight 需要付費的 Apple Developer Program。
+- App 圖示是 pr-runners 自己畫的（2×2 的 runner 格子，與選單列小圖同一個語彙）；只換了 iOS 的圖示，桌面與 Android 的圖示仍是 Tauri 預設 logo。
+- CI 不編 iOS（沒有 macOS runner）；改到 `crates/` 或 `app/src-tauri` 後，本機用 `cargo check -p pr-runners-app --target aarch64-apple-ios-sim` 確認 iOS 還編得過。
 
 Windows 版與 Mac 版的差別：
 

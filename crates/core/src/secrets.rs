@@ -39,8 +39,22 @@ impl KeyringStore {
     }
 
     fn entry(account_id: u64) -> Result<keyring_core::Entry, SecretError> {
-        keyring_core::Entry::new(SERVICE, &user(account_id))
-            .map_err(|e| SecretError::Store(e.to_string()))
+        // iOS：token 只能留在這支手機。預設的存取政策（WhenUnlocked）會跟著加密備份還原到別台裝置；
+        // 改成 WhenUnlockedThisDeviceOnly：保留「裝置鎖定時讀不到」的保護，再加上不離開這支裝置。
+        // 不選 AfterFirstUnlock：iOS 鎖定後 App 會被暫停，沒有背景讀取的需要；鎖定時寫入失敗由
+        // `RetryingStore` 保留並重試。
+        #[cfg(target_os = "ios")]
+        let entry = keyring_core::Entry::new_with_modifiers(
+            SERVICE,
+            &user(account_id),
+            &std::collections::HashMap::from([(
+                "access-policy",
+                "when-unlocked-this-device-only",
+            )]),
+        );
+        #[cfg(not(target_os = "ios"))]
+        let entry = keyring_core::Entry::new(SERVICE, &user(account_id));
+        entry.map_err(|e| SecretError::Store(e.to_string()))
     }
 }
 
@@ -132,6 +146,18 @@ impl<S: SecretStore> SecretStore for RetryingStore<S> {
 #[cfg(target_os = "macos")]
 pub fn init_native_store() -> Result<(), SecretError> {
     let store = apple_native_keyring_store::keychain::Store::new()
+        .map_err(|e| SecretError::Store(e.to_string()))?;
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
+/// iOS：把 Apple Protected Data（Data Protection 金鑰庫）設為 `keyring-core` 的 default store。App 啟動時呼叫一次。
+/// 需要 App 以 provisioning profile 簽章（Xcode 簽章的模擬器／實機 build 都有）；沒簽章會得到 `-34018`。
+/// 不同步到 iCloud；每筆 token 另外用 `when-unlocked-this-device-only` 存取政策（見 `KeyringStore::entry`），
+/// 所以不會隨加密備份還原到別台裝置。沿用 App 預設的 access group。
+#[cfg(target_os = "ios")]
+pub fn init_native_store() -> Result<(), SecretError> {
+    let store = apple_native_keyring_store::protected::Store::new()
         .map_err(|e| SecretError::Store(e.to_string()))?;
     keyring_core::set_default_store(store);
     Ok(())

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Settings } from "./generated/Settings";
 import type { Snapshot } from "./generated/Snapshot";
+import { type Platform, detectPlatform, isDesktop, isMobile } from "./view";
 
 class Store {
   snapshot = $state<Snapshot | null>(null);
@@ -61,28 +62,23 @@ export async function refreshNow(): Promise<void> {
   if (!isMock()) await invoke("refresh_now");
 }
 
-export type Platform = "mac" | "windows" | "android";
-
-/** 桌面版（有系統匣小視窗、主視窗、置頂與透明度設定）。 */
-export const isDesktop = (p: Platform) => p !== "android";
+export { type Platform, isDesktop, isMobile };
 
 /**
- * 依平台在 <html> 加 `mac`／`windows`／`android` class，載入對應的樣式。
- * dev 的 `?mock=1&platform=android|windows`：在瀏覽器裡預覽該平台的版面。
+ * 依平台在 <html> 加 `mac`／`windows`／`android`／`ios` class，載入對應的樣式。
+ * dev 的 `?mock=1&platform=android|windows|ios`：在瀏覽器裡預覽該平台的版面。
  */
 export async function applyPlatformClass(): Promise<Platform> {
   let cls: Platform = "mac";
   const preview = import.meta.env.DEV && isMock() ? new URLSearchParams(location.search).get("platform") : null;
-  if (preview === "android" || preview === "windows") {
+  if (preview === "android" || preview === "windows" || preview === "ios") {
     cls = preview;
   } else {
     try {
       const { platform } = await import("@tauri-apps/plugin-os");
-      const p = platform();
-      cls = p === "android" ? "android" : p === "windows" ? "windows" : "mac";
+      cls = detectPlatform(platform(), navigator.userAgent);
     } catch {
-      const ua = navigator.userAgent;
-      cls = /android/i.test(ua) ? "android" : /windows/i.test(ua) ? "windows" : "mac";
+      cls = detectPlatform(null, navigator.userAgent);
     }
   }
   document.documentElement.classList.add(cls);

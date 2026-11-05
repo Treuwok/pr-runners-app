@@ -3,7 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
-  import { applyPlatformClass, isDesktop, isMock, type Platform, loadWindowPrefs, refreshNow, saveWindowPrefs, startStore, store, windowPrefs } from "$lib/store.svelte";
+  import { applyPlatformClass, isDesktop, isMobile, isMock, type Platform, loadWindowPrefs, refreshNow, saveWindowPrefs, startStore, store, windowPrefs } from "$lib/store.svelte";
   import RunnerHistory from "$lib/components/RunnerHistory.svelte";
   import Jobs from "./Jobs.svelte";
   import Login from "./Login.svelte";
@@ -40,9 +40,9 @@
       scope = null;
       historyKey = null;
     });
-    // Android：切到背景就暫停輪詢，回前景立刻刷新（Mac 的背景持續輪詢，打開視窗不算「回到前景」）
+    // 行動版（Android、iOS）：切到背景就暫停輪詢，回前景立刻刷新（Mac 的背景持續輪詢，打開視窗不算「回到前景」）
     const onVisibility = () => {
-      if (platform !== "android" || isMock()) return;
+      if (!isMobile(platform) || isMock()) return;
       void invoke(document.hidden ? "app_paused" : "app_resumed");
     };
     document.addEventListener("visibilitychange", onVisibility);
@@ -135,9 +135,9 @@
       {/if}
     </header>
     <main
-      ontouchstart={platform === "android" ? touchStart : undefined}
-      ontouchmove={platform === "android" ? touchMove : undefined}
-      ontouchend={platform === "android" ? touchEnd : undefined}
+      ontouchstart={isMobile(platform) ? touchStart : undefined}
+      ontouchmove={isMobile(platform) ? touchMove : undefined}
+      ontouchend={isMobile(platform) ? touchEnd : undefined}
     >
       {#if pull > 0}
         <div class="pull" style:height="{pull / 2}px" aria-hidden="true">
@@ -156,7 +156,7 @@
         <Settings snapshot={snap} {platform} onadd={() => (adding = true)} />
       {/if}
     </main>
-    {#if platform === "android"}
+    {#if isMobile(platform)}
       <nav class="bottom" aria-label="頁面">
         {#each [["runners", "Runners"], ["jobs", "Jobs"], ["settings", "設定"]] as [id, label] (id)}
           <button class:on={tab === id} aria-current={tab === id ? "page" : undefined} onclick={() => ((tab = id as Tab), (historyKey = null))}><i></i>{label}</button>
