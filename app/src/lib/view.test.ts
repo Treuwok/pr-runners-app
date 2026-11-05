@@ -515,4 +515,22 @@ describe("waitLabel", () => {
       ["mac", true, "等自家機器"],
     ]);
   });
+  it("groupQueue：同名但等不同機器的 job 不合併成同一個「×n」", () => {
+    const mk = (key: string, pool: typeof POOL | null): WaitingView => ({
+      job: { ...job, state: "Queued", pool, job: "e2e", workflow: "ci", key },
+      age: { Known: { secs: 100 } },
+      attention: false,
+      candidates: [],
+    });
+    const big = { stem: "pool-16x-linux", name: "pool", machine: "16x-linux" };
+    const [g] = groupQueue([
+      { w: mk("a", POOL), roster: "Full" },
+      { w: mk("b", big), roster: "Full" },
+      { w: mk("c", POOL), roster: "Full" },
+    ]);
+    expect(g.jobs.map((j) => [j.count, j.wait])).toEqual([
+      [2, "等 pool 8x-linux"],
+      [1, "等 pool 16x-linux"],
+    ]);
+  });
 });

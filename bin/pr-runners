@@ -282,13 +282,16 @@ render() {
     { [ -n "$busymap" ] && awk -F'\t' '{print "B\t"$2"\t"$1"\t"$3"\t"$4}' <<<"$busymap"; }
     awk -F'\t' 'NF>=8 && $5!="" && $5!="…待指派" && index($5,"☁")!=1 {print "P\t"$5"\t"$2"\t"$6"\t"$8}' <<<"$rows"
   )
-  runners=$(awk -F'\t' '
+  # 臨時機器（名稱最後一段是亂數）不是自家 runner：跨 repo 忙碌快照（B 行）裡的也要丟掉，不然亂數名稱會漏進這份名冊
+  runners=$(awk -F'\t' "$POOL_AWK"'
     $1=="B" { r=$2; seen[r]=1; busy[r]=1
               b[r]=(b[r]=="" ? "" : b[r]" · ") "[" $3 "] " $4 " (" $5 ")" }
     $1=="P" { r=$2; seen[r]=1
               if (($3+0)>(late[r]+0)) { late[r]=$3; lj[r]=$4; lh[r]=$5 } }
     END {
+      for (r in seen) pool_seed(r)
       for (r in seen) {
+        if (pool_stem(r) != "") continue
         if (busy[r]) printf "0\t%s\t🟢\t忙碌\t← %s\n", r, b[r]
         else         printf "1\t%s\t⚪\t閒置\t最近：%s @ %s\n", r, (lj[r]==""?"—":lj[r]), (lh[r]==""?"—":lh[r])
       }

@@ -172,13 +172,15 @@ export function groupQueue(items: { w: WaitingView; roster: RosterLevel }[]): Qu
     }
     // 等臨時機器的 job 不對位自家 runner：「沒有 runner 能接」只對等自家機器的 job 成立
     const noMatch = roster === "Full" && w.job.pool === null && w.candidates.length === 0;
-    const same = g.jobs.find((j) => j.name === w.job.job);
+    // 同名但等的不是同一組機器（例如不同機型的 pool）要分開，不然「×n」會把另一組的需求報成第一組
+    const wait = waitLabel(w.job);
+    const same = g.jobs.find((j) => j.name === w.job.job && j.wait === wait);
     if (same) {
       same.count += 1;
       same.url = null;
       same.noMatch ||= noMatch;
     } else {
-      g.jobs.push({ name: w.job.job, count: 1, url: w.job.url, noMatch, wait: waitLabel(w.job) });
+      g.jobs.push({ name: w.job.job, count: 1, url: w.job.url, noMatch, wait });
     }
     if (g.oldest === null || knownSecs(w.age) > knownSecs(g.oldest)) g.oldest = w.age;
     g.attention ||= w.attention;

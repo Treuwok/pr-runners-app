@@ -327,6 +327,16 @@ impl Account {
     }
 }
 
+/// 這個 job 要不要為它查「平常跑多久」：正在自家（self-hosted）runner 上跑的才要；跑在臨時機器上的不要。
+fn wants_history(j: &JobInfo, fleet: &Fleet) -> bool {
+    j.facts.state == pr_runners_rules::JobState::InProgress
+        && needs_self_hosted(&j.facts)
+        && j.facts
+            .runner_name
+            .as_deref()
+            .is_none_or(|n| fleet.stem_of(n).is_none())
+}
+
 async fn scan_repo(
     ctx: &Ctx<'_>,
     repo: &RepoInfo,
@@ -522,14 +532,16 @@ async fn scan_scope(
     let workflow_key = |j: &api::JobInfo| -> Option<WorkflowKey> {
         j.workflow_id.map(|w| (j.facts.repo.clone(), w))
     };
-    let wanted: BTreeSet<WorkflowKey> = rt
-        .repo_runs
-        .values()
-        .flatten()
-        .flat_map(|e| &e.jobs)
-        .filter(|j| {
-            j.facts.state == pr_runners_rules::JobState::InProgress && needs_self_hosted(&j.facts)
-        })
+    // 臨時機器的 job 不預估（組裝時會丟掉），所以也不該花歷史查詢的配額去抓它們的樣本
+    let all_jobs = || rt.repo_runs.values().flatten().flat_map(|e| &e.jobs);
+    let fleet = Fleet::observe(
+        recs.iter()
+            .map(|r| r.facts.name.as_str())
+            .chain(all_jobs().filter_map(|j| j.facts.runner_name.as_deref())),
+        all_jobs().flat_map(|j| j.facts.labels.iter().map(String::as_str)),
+    );
+    let wanted: BTreeSet<WorkflowKey> = all_jobs()
+        .filter(|j| wants_history(j, &fleet))
         .filter_map(workflow_key)
         .collect();
     if !wanted.is_empty() && !c.rate().is_low() {
@@ -901,6 +913,44 @@ mod tests {
     const NOW: i64 = 1_000_000;
     fn set(items: &[&str]) -> BTreeSet<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn job_on(runner: &str, group: &str) -> JobInfo {
+        JobInfo {
+            facts: pr_runners_rules::JobFacts {
+                key: "1/1".into(),
+                repo: "o/r".into(),
+                repo_public: false,
+                state: pr_runners_rules::JobState::InProgress,
+                labels: vec![],
+                runner_id: Some(1),
+                runner_name: Some(runner.into()),
+                runner_group_name: Some(group.into()),
+                created_at: 0,
+                started_at: Some(1),
+            },
+            run_id: 1,
+            job_id: 1,
+            workflow_id: Some(7),
+            workflow_name: "ci".into(),
+            job_name: "t".into(),
+            html_url: String::new(),
+            run_attempt: 1,
+        }
+    }
+
+    #[test]
+    fn history_is_only_fetched_for_jobs_on_own_runners() {
+        // 臨時機器上的 job（group 非空，needs_self_hosted 為 true）不查歷史；自家機器的要查
+        let pool = job_on("pool-8x-linux-q7k2m9x4b1c8d3e5", "Default");
+        let own = job_on("netcup", "Default");
+        let fleet = Fleet::observe(["pool-8x-linux-q7k2m9x4b1c8d3e5", "netcup"], []);
+        assert!(
+            needs_self_hosted(&pool.facts),
+            "前提：它會被當成 self-hosted"
+        );
+        assert!(!wants_history(&pool, &fleet));
+        assert!(wants_history(&own, &fleet));
     }
 
     #[test]
