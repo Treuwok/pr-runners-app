@@ -25,9 +25,9 @@
 </script>
 
 <div class="lane-wrap">
-  <button class="lane" class:bad={runner.attention} title="查看執行歷史" onclick={() => onopen(runner.key)}>
+  <button class="lane" title="查看執行歷史" onclick={() => onopen(runner.key)}>
     <span class="who">
-      <span class="dot {dotFor(runner)}" class:alert={runner.attention} aria-hidden="true"></span>
+      <span class="dot {dotFor(runner)}" aria-hidden="true"></span>
       <span class="nm">{runner.name}</span>
     </span>
     <span class="job" class:quiet={!busy}>

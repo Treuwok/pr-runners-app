@@ -213,7 +213,10 @@ async fn same_runner_name_in_two_orgs_is_not_confused() {
     );
     assert!(rb.job.is_none());
     assert_ne!(ra.key, rb.key);
-    assert_eq!((snap.summary.busy, snap.summary.idle), (1, 1));
+    assert_eq!(
+        (snap.summary.own_busy, snap.summary.own_online),
+        (1, 2)
+    );
 }
 
 #[tokio::test]

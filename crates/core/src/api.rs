@@ -177,14 +177,11 @@ struct RawRun {
     html_url: String,
 }
 
-/// 這個 job 是不是跑在 Blacksmith 的雲端 VM 上（標籤或 runner 名稱是 Blacksmith 機型命名）。
-fn runs_on_blacksmith(j: &RawJob) -> bool {
-    j.labels
-        .iter()
-        .any(|l| pr_runners_rules::is_blacksmith_machine(l))
-        || j.runner_name
-            .as_deref()
-            .is_some_and(pr_runners_rules::is_blacksmith_machine)
+/// 這個 job 是不是跑在臨時機器上（runner 名稱依 `Fleet` 的形狀規則判成臨時機器）。
+fn runs_on_pool(fleet: &pr_runners_rules::Fleet, j: &RawJob) -> bool {
+    j.runner_name
+        .as_deref()
+        .is_some_and(|n| fleet.stem_of(n).is_some())
 }
 
 #[derive(Deserialize)]
@@ -526,13 +523,17 @@ pub async fn completed_job_durations(
 /// 一次執行裡的 job → 歷史樣本。純函式（不打 API），所以「哪些 job 不進歷史」可以直接測。
 fn durations_from_jobs(raw: Vec<RawJob>) -> Result<Vec<crate::history::Sample>, ApiError> {
     let mut out = Vec::new();
+    let fleet = pr_runners_rules::Fleet::observe(
+        raw.iter().filter_map(|j| j.runner_name.as_deref()),
+        raw.iter().flat_map(|j| j.labels.iter().map(String::as_str)),
+    );
     for j in raw {
         if j.conclusion.as_deref() != Some("success") {
             continue;
         }
-        // Blacksmith 的雲端 VM 跑得比自家機器快很多（機型由 ci-burst 決定）：不記進歷史，
+        // 臨時機器的雲端 VM 跑得比自家機器快很多：不記進歷史，
         // 不然同名 job 的「平常要跑多久」會被溢出期間的樣本拉偏，自家 runner 的預估跟著不準。
-        if runs_on_blacksmith(&j) {
+        if runs_on_pool(&fleet, &j) {
             continue;
         }
         let (Some(start), Some(end)) = (j.started_at.as_deref(), j.completed_at.as_deref()) else {
@@ -732,7 +733,7 @@ pub async fn pr_tag(
 }
 
 #[cfg(test)]
-mod blacksmith_history_tests {
+mod pool_history_tests {
     use super::*;
 
     fn raw(labels: &[&str], runner: Option<&str>) -> RawJob {
@@ -747,28 +748,22 @@ mod blacksmith_history_tests {
     }
 
     #[test]
-    fn blacksmith_runs_are_kept_out_of_the_history() {
-        assert!(runs_on_blacksmith(&raw(&["blacksmith-8vcpu-ubuntu-2404"], None)));
-        assert!(runs_on_blacksmith(&raw(&[], Some("blacksmith-8vcpu-ubuntu-2404-abc"))));
-    }
-
-    #[test]
-    fn durations_come_only_from_self_hosted_runs() {
-        // 同一個 job 在自家機器跑 60 秒、在 Blacksmith 跑 60 秒：只有自家那筆進歷史
+    fn pool_runs_are_kept_out_of_the_history() {
         let jobs = vec![
             raw(&["self-hosted", "Linux"], Some("netcup-debian13-vps")),
-            raw(&["blacksmith-8vcpu-ubuntu-2404"], Some("blacksmith-8vcpu-ubuntu-2404-abc")),
-            raw(&[], Some("blacksmith-2vcpu-ubuntu-2404-xyz")),
+            raw(&["pool-8x-linux"], Some("pool-8x-linux-q7k2m9x4b1c8d3e5")),
+            // 尾巴全是字母，靠 job label 等於組鍵判成臨時機器
+            raw(&["pool-2x-linux"], Some("pool-2x-linux-abcdefghijklmnop")),
         ];
         let samples = durations_from_jobs(jobs).expect("valid timestamps");
-        assert_eq!(samples.len(), 1, "Blacksmith 的樣本不能混進自家 runner 的預估");
+        assert_eq!(samples.len(), 1, "臨時機器的樣本不能混進自家 runner 的預估");
         assert_eq!(samples[0].runner.as_deref(), Some("netcup-debian13-vps"));
         assert_eq!(samples[0].secs, 60);
     }
 
     #[test]
     fn self_hosted_runs_still_count() {
-        assert!(!runs_on_blacksmith(&raw(&["self-hosted", "Linux"], Some("netcup-debian13-vps"))));
-        assert!(!runs_on_blacksmith(&raw(&["self-hosted", "blacksmith-cache"], Some("blacksmith-builder"))));
+        let jobs = vec![raw(&["self-hosted", "Linux"], Some("builder-1"))];
+        assert_eq!(durations_from_jobs(jobs).expect("valid").len(), 1);
     }
 }

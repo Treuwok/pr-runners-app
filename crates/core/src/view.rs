@@ -2,11 +2,11 @@
 //! 時間與 ID 都是整數（TS 端為 `number`，見 `.cargo/config.toml`）。
 
 use crate::api::ScopeKind;
-use pr_runners_rules::{Candidate, CandidateKind, Elapsed, JobState, OfflineSince};
+use pr_runners_rules::{Candidate, CandidateKind, Elapsed, JobState, OfflineSince, PoolTag};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -20,21 +20,26 @@ pub struct Snapshot {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Summary {
-    pub busy: u32,
-    pub idle: u32,
-    pub offline: u32,
+    /// 自家機器（不是臨時機器）在忙的台數
+    pub own_busy: u32,
+    /// 自家機器在線的台數（忙碌＋閒置）
+    pub own_online: u32,
+    /// 自家機器離線的台數
+    pub own_offline: u32,
+    /// 正在跑的臨時機器台數；離線的臨時機器殘骸不進任何計數
+    pub pool_busy: u32,
     pub waiting: u32,
     pub attention: Severity,
+    /// 資料可能過時：任一帳號沒有網路或被限流
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum Severity {
     Ok,
-    /// 有排隊太久的 job
+    /// 有排隊太久的 job（離線 runner 不算需要注意）
     Warn,
-    /// 有依 spec §10 判定需要注意的離線 runner（紅優先於橘）
-    Critical,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -104,7 +109,9 @@ pub struct RunnerView {
     pub group: Option<String>,
     pub job: Option<JobView>,
     pub elapsed: Option<Elapsed>,
-    pub attention: bool,
+    /// 臨時機器所屬的組；自家機器是 `None`。畫面照這個分區，不重算分類
+    #[serde(default)]
+    pub pool: Option<PoolTag>,
     /// 是否被某筆等待中 job 標成能接（取最確定的一種）
     pub can_take: Option<CandidateKind>,
 }
@@ -131,12 +138,11 @@ pub struct JobView {
     pub pr_tag: String,
     pub url: String,
     pub runner_name: Option<String>,
-    /// 跑在 GitHub-hosted runner 上（不是自家，也不是 Blacksmith）
+    /// 跑在 GitHub-hosted runner 上（不是自家，也不是臨時機器）
     pub hosted: bool,
-    /// 跑在 Blacksmith 的一次性 VM 上（ci-burst 溢出）：與自家 runner、GitHub-hosted 分開顯示。
-    /// 預設 false：升級前存下的快照沒有這個欄位，照樣讀得進來（那時 Blacksmith job 還不會被分出來）。
+    /// 跑在（或在等）臨時機器的哪一組；自家機器與 GitHub-hosted 是 `None`
     #[serde(default)]
-    pub blacksmith: bool,
+    pub pool: Option<PoolTag>,
     /// 同名 job 最近幾次成功平常跑多久（秒）；紀錄不足就是 null，畫面不預估
     pub typical_secs: Option<u64>,
 }

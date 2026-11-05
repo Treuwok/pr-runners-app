@@ -213,11 +213,13 @@ mod tests {
             generated_at: 1,
             accounts,
             summary: Summary {
-                busy: 9,
-                idle: 9,
-                offline: 9,
+                own_busy: 9,
+                own_online: 9,
+                own_offline: 9,
+                pool_busy: 9,
                 waiting: 9,
-                attention: Severity::Critical,
+                attention: Severity::Warn,
+                stale: true,
             },
         }
     }
@@ -233,7 +235,7 @@ mod tests {
             .map(|x| x.name.as_str())
             .collect();
         assert_eq!(names, ["A"], "B 已取消勾選");
-        assert_eq!(s.summary.busy, 0, "計數要依剩下的內容重算");
+        assert_eq!(s.summary.own_busy, 0, "計數要依剩下的內容重算");
         assert_eq!(s.summary.attention, Severity::Ok);
     }
 

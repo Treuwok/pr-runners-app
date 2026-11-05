@@ -8,9 +8,9 @@
 use crate::api::{JobInfo, RawRunner, ScopeKind};
 use crate::view::*;
 use pr_runners_rules::{
-    Attention, AttentionEvent, Candidate, CandidateKind, GroupAccess, JobObs, JobState,
-    ObservationState, RunnerFacts, RunnerObs, candidates, elapsed, evaluate, is_blacksmith,
-    is_blacksmith_runner, needs_self_hosted, queued_age,
+    Attention, AttentionEvent, Candidate, CandidateKind, Fleet, GroupAccess, JobFacts, JobObs,
+    JobState, ObservationState, PoolTag, RunnerFacts, RunnerObs, candidates, elapsed, evaluate,
+    needs_self_hosted, pool_tag, queued_age,
 };
 use std::collections::BTreeMap;
 
@@ -192,8 +192,18 @@ fn runner_for_job(recs: &mut Vec<RunnerRec>, input: &ScopeInput, job: &JobInfo) 
     }
 }
 
-fn job_view(e: &JobEntry) -> JobView {
+/// 這個 job 跑在（或在等）哪一組臨時機器：已經在跑的看 runner 名稱，排隊中的看 labels。
+fn job_pool(fleet: &Fleet, f: &JobFacts) -> Option<PoolTag> {
+    let stem = match f.runner_name.as_deref() {
+        Some(name) => fleet.stem_of(name),
+        None => fleet.waits_for(&f.labels),
+    };
+    stem.map(|s| pool_tag(&s))
+}
+
+fn job_view(e: &JobEntry, fleet: &Fleet) -> JobView {
     let f = &e.job.facts;
+    let pool = job_pool(fleet, f);
     JobView {
         key: f.key.clone(),
         repo: f.repo.clone(),
@@ -204,10 +214,10 @@ fn job_view(e: &JobEntry) -> JobView {
         pr_tag: e.tag.clone(),
         url: e.job.html_url.clone(),
         runner_name: f.runner_name.clone(),
-        hosted: !needs_self_hosted(f) && !is_blacksmith(f),
-        blacksmith: is_blacksmith(f),
-        // Blacksmith 的 job 不預估：歷史只記自家 runner 的樣本，拿它預估雲端 VM 會誤導
-        typical_secs: if is_blacksmith(f) { None } else { e.typical_secs },
+        hosted: !needs_self_hosted(f) && pool.is_none(),
+        // 臨時機器的 job 不預估：歷史只記自家 runner 的樣本，拿它預估雲端 VM 會誤導
+        typical_secs: if pool.is_some() { None } else { e.typical_secs },
+        pool,
     }
 }
 
@@ -218,14 +228,7 @@ pub fn assemble(
     first_observation: bool,
 ) -> Assembled {
     let now = input.now;
-    // Blacksmith 的 VM 會出現在 org 名冊（用完即丟的雲端機器）：不是自家 runner，
-    // 不然每台關掉的 VM 都會變成一列「離線的 runner」，還會觸發需要注意。
-    let mut recs: Vec<RunnerRec> = input
-        .runners
-        .iter()
-        .filter(|r| !is_blacksmith_runner(&r.facts))
-        .cloned()
-        .collect();
+    let mut recs: Vec<RunnerRec> = input.runners.to_vec();
 
     // job → runner（只看進行中的 self-hosted job；hosted 的 `GitHub Actions 3` 不進名冊）
     let mut job_on: BTreeMap<usize, &JobEntry> = BTreeMap::new();
@@ -240,6 +243,26 @@ pub fn assemble(
         }
     }
 
+    // 臨時機器分類：名冊（含補出來的忙碌列）與 job 上的 runner 名稱看名稱形狀，
+    // 這個 scope 全部 job 的 labels 提供「組鍵等於 job label」那條規則
+    let fleet = Fleet::observe(
+        recs.iter().map(|r| r.facts.name.as_str()).chain(
+            input
+                .jobs
+                .iter()
+                .filter_map(|e| e.job.facts.runner_name.as_deref()),
+        ),
+        input
+            .jobs
+            .iter()
+            .flat_map(|e| e.job.facts.labels.iter().map(String::as_str)),
+    );
+    let job_pools: Vec<Option<PoolTag>> = input
+        .jobs
+        .iter()
+        .map(|e| job_pool(&fleet, &e.job.facts))
+        .collect();
+
     // 需要注意
     let runner_obs: Vec<RunnerObs> = recs
         .iter()
@@ -248,14 +271,16 @@ pub fn assemble(
             online: r.facts.online,
         })
         .collect();
+    // 等臨時機器的 job 也算「等自家資源」：排隊超過 10 分鐘一樣會被 flag
     let job_obs: Vec<JobObs> = input
         .jobs
         .iter()
-        .map(|e| JobObs {
+        .zip(&job_pools)
+        .map(|(e, pool)| JobObs {
             key: e.job.facts.key.clone(),
             state: e.job.facts.state.clone(),
             created_at: e.job.facts.created_at,
-            self_hosted: needs_self_hosted(&e.job.facts),
+            self_hosted: needs_self_hosted(&e.job.facts) || pool.is_some(),
         })
         .collect();
     let (state, attention, events) = evaluate(
@@ -266,11 +291,6 @@ pub fn assemble(
         now,
         first_observation,
     );
-    let runner_attn = |key: &str| {
-        attention
-            .iter()
-            .any(|a| matches!(a, Attention::RunnerOffline { key: k, .. } if k == key))
-    };
     let job_attn = |key: &str| {
         attention
             .iter()
@@ -279,20 +299,30 @@ pub fn assemble(
 
     // 排隊對位：只對排隊中的 self-hosted job；runner 只傳同一個 scope 的
     let facts: Vec<RunnerFacts> = recs.iter().map(|r| r.facts.clone()).collect();
-    let mut queued: Vec<&JobEntry> = input
+    let mut queued: Vec<(&JobEntry, Option<&PoolTag>)> = input
         .jobs
         .iter()
-        .filter(|e| e.job.facts.state == JobState::Queued && needs_self_hosted(&e.job.facts))
+        .zip(&job_pools)
+        .filter(|(e, pool)| {
+            e.job.facts.state == JobState::Queued
+                && (needs_self_hosted(&e.job.facts) || pool.is_some())
+        })
+        .map(|(e, pool)| (e, pool.as_ref()))
         .collect();
-    queued.sort_by(|a, b| {
+    queued.sort_by(|(a, _), (b, _)| {
         (a.job.facts.created_at, &a.job.facts.key).cmp(&(b.job.facts.created_at, &b.job.facts.key))
     });
     let mut can_take: BTreeMap<String, CandidateKind> = BTreeMap::new();
     let waiting: Vec<WaitingView> = queued
         .iter()
-        .map(|e| {
+        .map(|(e, pool)| {
             let f = &e.job.facts;
-            let cands: Vec<Candidate> = candidates(f, &facts);
+            // 等臨時機器的 job 沒有「哪台自家 runner 能接」的問題：不對位
+            let cands: Vec<Candidate> = if pool.is_some() {
+                Vec::new()
+            } else {
+                candidates(f, &facts)
+            };
             for c in &cands {
                 can_take
                     .entry(c.runner_key.clone())
@@ -300,7 +330,7 @@ pub fn assemble(
                     .or_insert(c.kind);
             }
             WaitingView {
-                job: job_view(e),
+                job: job_view(e, &fleet),
                 age: queued_age(now, f.created_at),
                 attention: job_attn(&f.key),
                 candidates: cands,
@@ -342,16 +372,16 @@ pub fn assemble(
                 state: rstate,
                 labels: r.facts.labels.clone(),
                 group: r.group_name.clone(),
-                job: job.map(job_view),
+                job: job.map(|e| job_view(e, &fleet)),
                 elapsed: el,
-                attention: runner_attn(key),
+                pool: fleet.stem_of(&r.facts.name).map(|s| pool_tag(&s)),
                 can_take: can_take.get(key).copied(),
             }
         })
         .collect();
     runners.sort_by(|a, b| (&a.name, &a.key).cmp(&(&b.name, &b.key)));
 
-    let mut jobs: Vec<JobView> = input.jobs.iter().map(job_view).collect();
+    let mut jobs: Vec<JobView> = input.jobs.iter().map(|e| job_view(e, &fleet)).collect();
     jobs.sort_by(|a, b| a.key.cmp(&b.key));
 
     Assembled {
@@ -370,28 +400,37 @@ pub fn assemble(
     }
 }
 
-/// 全部帳號、全部 scope 的計數與最高嚴重度（紅優先於橘）。
+/// 全部帳號、全部 scope 的計數與嚴重度。自家機器與臨時機器分開算；離線的臨時機器殘骸不進任何計數。
 pub fn summarize(accounts: &[AccountView]) -> Summary {
     let mut s = Summary {
-        busy: 0,
-        idle: 0,
-        offline: 0,
+        own_busy: 0,
+        own_online: 0,
+        own_offline: 0,
+        pool_busy: 0,
         waiting: 0,
         attention: Severity::Ok,
+        stale: accounts.iter().any(|a| {
+            matches!(
+                a.status,
+                AccountStatus::Offline { .. } | AccountStatus::Throttled { .. }
+            )
+        }),
     };
     for scope in accounts.iter().flat_map(|a| a.scopes.iter()) {
         for r in &scope.runners {
-            match r.state {
-                RunnerState::Busy => s.busy += 1,
-                RunnerState::Idle => s.idle += 1,
-                RunnerState::Offline { .. } => s.offline += 1,
-            }
-            if r.attention {
-                s.attention = Severity::Critical;
+            match (&r.pool, &r.state) {
+                (None, RunnerState::Busy) => {
+                    s.own_busy += 1;
+                    s.own_online += 1;
+                }
+                (None, RunnerState::Idle) => s.own_online += 1,
+                (None, RunnerState::Offline { .. }) => s.own_offline += 1,
+                (Some(_), RunnerState::Busy) => s.pool_busy += 1,
+                (Some(_), _) => {}
             }
         }
         s.waiting += scope.waiting.len() as u32;
-        if s.attention == Severity::Ok && scope.waiting.iter().any(|w| w.attention) {
+        if scope.waiting.iter().any(|w| w.attention) {
             s.attention = Severity::Warn;
         }
     }
@@ -544,121 +583,215 @@ mod tests {
         );
     }
 
-    fn blacksmith_job(state: JobState) -> JobEntry {
+    fn pool_job(key: &str, state: JobState, runner: Option<(u64, &str)>) -> JobEntry {
         let mut e = running("o/r", 5);
-        e.job.facts.key = "2/2".into();
+        e.job.facts.key = key.into();
         e.job.facts.state = state;
-        e.job.facts.labels = vec!["blacksmith-8vcpu-ubuntu-2404".into()];
-        e.job.facts.runner_id = Some(900);
-        e.job.facts.runner_name = Some("blacksmith-8vcpu-ubuntu-2404-abc".into());
+        e.job.facts.labels = vec!["pool-8x-linux".into()];
+        e.job.facts.runner_id = runner.map(|r| r.0);
+        e.job.facts.runner_name = runner.map(|r| r.1.to_string());
         e
     }
 
-    #[test]
-    fn blacksmith_vms_in_the_org_roster_are_not_runners() {
-        // 關掉的 Blacksmith VM 在名冊裡是 offline；不能變成「離線的 runner」或觸發 Critical
-        let mut vm = rec("o", 900, "blacksmith-2vcpu-ubuntu-2404-56i2b5l67zytz24p");
-        vm.facts.online = false;
-        vm.facts.labels = vec![];
-        let runners = [rec("o", 1, "netcup"), vm];
-        let input = ScopeInput {
+    fn org_input<'a>(
+        roster: RosterLevel,
+        runners: &'a [RunnerRec],
+        jobs: &'a [JobEntry],
+        now: i64,
+    ) -> ScopeInput<'a> {
+        ScopeInput {
             account_id: 1,
             name: "o",
             kind: ScopeKind::Org,
-            roster: RosterLevel::Full,
-            runners: &runners,
-            jobs: &[],
-            now: 100,
-        };
-        let out = assemble(&input, &ObservationState::default(), &[], true);
-        let names: Vec<&str> = out.view.runners.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, vec!["netcup"]);
+            roster,
+            runners,
+            jobs,
+            now,
+        }
     }
 
-    #[test]
-    fn running_blacksmith_job_adds_no_runner_row_and_is_marked() {
-        // 原本的缺口：已在跑、group 非空 → 補出一列假的忙碌 runner
-        let jobs = [blacksmith_job(JobState::InProgress)];
-        let input = ScopeInput {
+    fn account(status: AccountStatus, scope: ScopeView) -> AccountView {
+        AccountView {
             account_id: 1,
-            name: "o",
-            kind: ScopeKind::Org,
-            roster: RosterLevel::Full,
-            runners: &[],
-            jobs: &jobs,
-            now: 100,
-        };
-        let out = assemble(&input, &ObservationState::default(), &[], true);
-        assert!(out.view.runners.is_empty(), "Blacksmith job 不補 runner 列");
-        let j = &out.view.jobs[0];
-        assert!(j.blacksmith && !j.hosted, "獨立一類：不是 hosted，也不是自家");
+            login: "u".into(),
+            status,
+            scopes: vec![scope],
+        }
+    }
+
+    fn pool_rec(id: u64, tail: &str, online: bool, busy: bool) -> RunnerRec {
+        let mut r = rec("o", id, &format!("pool-8x-linux-{tail}"));
+        r.facts.online = online;
+        r.facts.busy = busy;
+        r.facts.labels = vec![];
+        r
     }
 
     #[test]
-    fn queued_blacksmith_job_never_waits_on_the_fleet() {
-        let jobs = [blacksmith_job(JobState::Queued)];
-        let runners = [rec("o", 1, "netcup")];
-        let input = ScopeInput {
-            account_id: 1,
-            name: "o",
-            kind: ScopeKind::Org,
-            roster: RosterLevel::Full,
-            runners: &runners,
-            jobs: &jobs,
-            now: 100_000,
+    fn pool_runners_are_tagged_and_offline_leftovers_do_not_count() {
+        let mut own_busy = rec("o", 1, "netcup");
+        own_busy.facts.busy = true;
+        let mut own_off = rec("o", 2, "la10");
+        own_off.facts.online = false;
+        let runners = [
+            own_busy,
+            own_off,
+            pool_rec(10, "q7k2m9x4b1c8d3e5", true, true),
+            pool_rec(11, "z8y7x6w5v4u3t2s1", false, false),
+            pool_rec(12, "a1b2c3d4e5f6g7h8", false, false),
+        ];
+        let out = assemble(
+            &org_input(RosterLevel::Full, &runners, &[], 100),
+            &ObservationState::default(),
+            &[],
+            true,
+        );
+        let pool_of = |n: &str| {
+            out.view
+                .runners
+                .iter()
+                .find(|r| r.name == n)
+                .unwrap()
+                .pool
+                .clone()
         };
-        let out = assemble(&input, &ObservationState::default(), &[], true);
-        assert!(out.view.waiting.is_empty(), "不進自家的等待中，也不算排隊太久");
-        assert!(out.view.jobs[0].blacksmith);
+        assert_eq!(pool_of("netcup"), None);
+        let tag = pool_of("pool-8x-linux-q7k2m9x4b1c8d3e5").expect("pool runner is tagged");
+        assert_eq!(
+            (tag.name.as_str(), tag.machine.as_str()),
+            ("pool", "8x-linux")
+        );
+        let s = summarize(&[account(AccountStatus::Ok, out.view)]);
+        assert_eq!(
+            (
+                s.own_busy,
+                s.own_online,
+                s.own_offline,
+                s.pool_busy,
+                s.attention
+            ),
+            (1, 1, 1, 1, Severity::Ok)
+        );
     }
 
     #[test]
-    fn blacksmith_job_gets_no_duration_estimate() {
-        let mut e = blacksmith_job(JobState::InProgress);
+    fn only_offline_pool_leftovers_means_no_pool_activity() {
+        let runners = [
+            pool_rec(10, "q7k2m9x4b1c8d3e5", false, false),
+            pool_rec(11, "z8y7x6w5v4u3t2s1", false, false),
+            pool_rec(12, "a1b2c3d4e5f6g7h8", false, false),
+        ];
+        let out = assemble(
+            &org_input(RosterLevel::Full, &runners, &[], 100),
+            &ObservationState::default(),
+            &[],
+            true,
+        );
+        let s = summarize(&[account(AccountStatus::Ok, out.view)]);
+        assert_eq!(
+            (s.pool_busy, s.own_online, s.own_offline, s.attention),
+            (0, 0, 0, Severity::Ok)
+        );
+    }
+
+    #[test]
+    fn queued_job_for_a_pool_is_waiting_and_flagged_after_10_minutes() {
+        let runners = [
+            rec("o", 1, "netcup"),
+            pool_rec(10, "q7k2m9x4b1c8d3e5", false, false),
+        ];
+        let mut job = pool_job("2/2", JobState::Queued, None);
+        job.job.facts.labels = vec!["Pool-8X-Linux".into()];
+        let jobs = [job];
+        let input = org_input(RosterLevel::Full, &runners, &jobs, 700);
+        let out = assemble(&input, &ObservationState::default(), &[], true);
+        assert_eq!(out.view.waiting.len(), 1);
+        let w = &out.view.waiting[0];
+        assert_eq!(
+            w.job.pool.as_ref().map(|p| p.stem.as_str()),
+            Some("pool-8x-linux")
+        );
+        assert!(!w.job.hosted);
+        assert!(
+            w.candidates.is_empty(),
+            "等臨時機器的 job 不對位自家 runner"
+        );
+        assert!(w.attention, "排隊 700 秒要被 flag");
+        // 排隊 5 分鐘還不 flag
+        let early = org_input(RosterLevel::Full, &runners, &jobs, 300);
+        let out = assemble(&early, &ObservationState::default(), &[], true);
+        assert!(!out.view.waiting[0].attention);
+    }
+
+    #[test]
+    fn busy_only_synthesized_rows_are_classified() {
+        let jobs = [
+            pool_job(
+                "2/2",
+                JobState::InProgress,
+                Some((901, "pool-8x-linux-q7k2m9x4b1c8d3e5")),
+            ),
+            pool_job(
+                "2/3",
+                JobState::InProgress,
+                Some((902, "pool-8x-linux-z8y7x6w5v4u3t2s1")),
+            ),
+        ];
+        let out = assemble(
+            &org_input(RosterLevel::BusyOnly, &[], &jobs, 100),
+            &ObservationState::default(),
+            &[],
+            true,
+        );
+        assert_eq!(out.view.runners.len(), 2);
+        assert!(out.view.runners.iter().all(|r| r.pool.is_some()));
+        assert!(out.view.jobs.iter().all(|j| j.pool.is_some() && !j.hosted));
+        let s = summarize(&[account(AccountStatus::Ok, out.view)]);
+        assert_eq!((s.pool_busy, s.own_online), (2, 0));
+    }
+
+    #[test]
+    fn pool_jobs_get_no_duration_estimate() {
+        let mut e = pool_job(
+            "2/2",
+            JobState::InProgress,
+            Some((901, "pool-8x-linux-q7k2m9x4b1c8d3e5")),
+        );
         e.typical_secs = Some(600); // 自家 runner 的歷史樣本
         let jobs = [e];
-        let input = ScopeInput {
-            account_id: 1,
-            name: "o",
-            kind: ScopeKind::Org,
-            roster: RosterLevel::Full,
-            runners: &[],
-            jobs: &jobs,
-            now: 100,
-        };
-        let out = assemble(&input, &ObservationState::default(), &[], true);
+        let out = assemble(
+            &org_input(RosterLevel::Full, &[], &jobs, 100),
+            &ObservationState::default(),
+            &[],
+            true,
+        );
         assert_eq!(out.view.jobs[0].typical_secs, None);
     }
 
     #[test]
-    fn a_job_view_saved_before_blacksmith_existed_still_loads() {
-        // 升級前存下的快照沒有 `blacksmith` 欄位：讀不進來就會被靜默丟掉，使用者離線時就看不到快取
+    fn self_hosted_job_has_no_pool() {
+        let jobs = [running("o/r", 5)];
+        let out = assemble(
+            &org_input(RosterLevel::Full, &[], &jobs, 100),
+            &ObservationState::default(),
+            &[],
+            true,
+        );
+        let j = &out.view.jobs[0];
+        assert!(j.pool.is_none() && !j.hosted);
+    }
+
+    #[test]
+    fn a_job_view_without_a_pool_field_still_loads() {
         let old = r#"{"key":"1/2","repo":"o/r","workflow":"ci","job":"t","state":"InProgress",
             "labels":["self-hosted"],"pr_tag":"PR#1","url":"u","runner_name":"x","hosted":false,
             "typical_secs":null}"#;
-        let j: JobView = serde_json::from_str(old).expect("an old snapshot still deserialises");
-        assert!(!j.blacksmith);
+        let j: JobView = serde_json::from_str(old).expect("deserialises without `pool`");
+        assert!(j.pool.is_none());
     }
 
-    #[test]
-    fn self_hosted_job_is_not_marked_blacksmith() {
-        let jobs = [running("o/r", 5)];
-        let input = ScopeInput {
-            account_id: 1,
-            name: "o",
-            kind: ScopeKind::Org,
-            roster: RosterLevel::Full,
-            runners: &[],
-            jobs: &jobs,
-            now: 100,
-        };
-        let out = assemble(&input, &ObservationState::default(), &[], true);
-        assert!(!out.view.jobs[0].blacksmith && !out.view.jobs[0].hosted);
-    }
-
-    #[test]
-    fn summarize_prefers_critical_over_warn() {
-        let mut sv = ScopeView {
+    fn empty_scope() -> ScopeView {
+        ScopeView {
             name: "o".into(),
             kind: ScopeKind::Org,
             roster: RosterLevel::Full,
@@ -666,21 +799,16 @@ mod tests {
             waiting: vec![],
             jobs: vec![],
             last_updated_at: 0,
-        };
-        let acct = |s: ScopeView| AccountView {
-            account_id: 1,
-            login: "u".into(),
-            status: AccountStatus::Ok,
-            scopes: vec![s],
-        };
-        assert_eq!(summarize(&[acct(sv.clone())]).attention, Severity::Ok);
-        sv.waiting.push(WaitingView {
-            job: job_view(&running("o/r", 1)),
-            age: pr_runners_rules::Elapsed::Known { secs: 700 },
-            attention: true,
-            candidates: vec![],
-        });
-        assert_eq!(summarize(&[acct(sv.clone())]).attention, Severity::Warn);
+        }
+    }
+
+    #[test]
+    fn only_a_job_queued_too_long_raises_attention() {
+        let mut sv = empty_scope();
+        assert_eq!(
+            summarize(&[account(AccountStatus::Ok, sv.clone())]).attention,
+            Severity::Ok
+        );
         sv.runners.push(RunnerView {
             key: "k".into(),
             name: "n".into(),
@@ -692,13 +820,39 @@ mod tests {
             group: None,
             job: None,
             elapsed: None,
-            attention: true,
+            pool: None,
             can_take: None,
         });
-        let s = summarize(&[acct(sv)]);
+        let s = summarize(&[account(AccountStatus::Ok, sv.clone())]);
         assert_eq!(
-            (s.attention, s.offline, s.waiting),
-            (Severity::Critical, 1, 1)
+            (s.attention, s.own_offline),
+            (Severity::Ok, 1),
+            "離線不算需要注意"
         );
+        let fleet = Fleet::default();
+        sv.waiting.push(WaitingView {
+            job: job_view(&running("o/r", 1), &fleet),
+            age: pr_runners_rules::Elapsed::Known { secs: 700 },
+            attention: true,
+            candidates: vec![],
+        });
+        let s = summarize(&[account(AccountStatus::Ok, sv)]);
+        assert_eq!((s.attention, s.waiting), (Severity::Warn, 1));
+    }
+
+    #[test]
+    fn stale_when_any_account_is_offline_or_throttled() {
+        let ok = account(AccountStatus::Ok, empty_scope());
+        assert!(!summarize(std::slice::from_ref(&ok)).stale);
+        let offline = account(AccountStatus::Offline { last_ok_at: 1 }, empty_scope());
+        assert!(summarize(&[ok.clone(), offline]).stale);
+        let throttled = account(
+            AccountStatus::Throttled {
+                remaining: 0,
+                reset_at: 9,
+            },
+            empty_scope(),
+        );
+        assert!(summarize(&[ok, throttled]).stale);
     }
 }

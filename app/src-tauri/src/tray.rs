@@ -5,17 +5,18 @@ use pr_runners_core::view::{Severity, Summary};
 
 /// 選單列計數：`{busy}▶`，有等待時加 ` {waiting}⏳`；沒有任何 runner 時是空字串（只顯示中性圖示）。
 pub fn tray_title(s: &Summary) -> String {
-    if s.busy + s.idle + s.offline == 0 {
+    if !has_runners(s) {
         return String::new();
     }
+    let busy = s.own_busy + s.pool_busy;
     if s.waiting > 0 {
-        format!("{}▶ {}⏳", s.busy, s.waiting)
+        format!("{busy}▶ {}⏳", s.waiting)
     } else {
-        format!("{}▶", s.busy)
+        format!("{busy}▶")
     }
 }
 
-/// 無 runner → neutral；紅（需要注意的離線）優先於橘（排隊太久）。
+/// 無 runner → neutral；排隊太久是橘。（Task 8 會整個換成依數字畫的小圖。）
 pub fn tray_icon_for(sev: Severity, has_runners: bool) -> &'static str {
     if !has_runners {
         return "neutral";
@@ -23,12 +24,11 @@ pub fn tray_icon_for(sev: Severity, has_runners: bool) -> &'static str {
     match sev {
         Severity::Ok => "ok",
         Severity::Warn => "warn",
-        Severity::Critical => "critical",
     }
 }
 
 pub fn has_runners(s: &Summary) -> bool {
-    s.busy + s.idle + s.offline > 0
+    s.own_online + s.own_offline + s.pool_busy > 0
 }
 
 /// 系統匣圖示的提示文字。Windows 的系統匣不能顯示文字，計數只看得到這裡（macOS 也會顯示）。
@@ -36,9 +36,12 @@ pub fn tray_tooltip(s: &Summary) -> String {
     if !has_runners(s) {
         return "pr-runners".into();
     }
-    let mut parts = vec![format!("{} 忙碌", s.busy), format!("{} 閒置", s.idle)];
-    if s.offline > 0 {
-        parts.push(format!("{} 離線", s.offline));
+    let mut parts = vec![
+        format!("{} 忙碌", s.own_busy + s.pool_busy),
+        format!("{} 閒置", s.own_online - s.own_busy),
+    ];
+    if s.own_offline > 0 {
+        parts.push(format!("{} 離線", s.own_offline));
     }
     parts.push(format!("{} 排隊", s.waiting));
     format!("pr-runners · {}", parts.join(" · "))
@@ -477,7 +480,7 @@ mod tests {
             "pr-runners · 4 忙碌 · 1 閒置 · 7 排隊"
         );
         assert_eq!(
-            tray_tooltip(&s(1, 0, 2, 0, Severity::Critical)),
+            tray_tooltip(&s(1, 0, 2, 0, Severity::Ok)),
             "pr-runners · 1 忙碌 · 0 閒置 · 2 離線 · 0 排隊"
         );
     }
@@ -488,13 +491,16 @@ mod tests {
         assert_eq!(main_nav_event(false), "goto-runners");
     }
 
+    /// 測試用：全部算成自家機器（臨時機器的計數 Task 8 才接上選單列）。
     fn s(busy: u32, idle: u32, offline: u32, waiting: u32, attention: Severity) -> Summary {
         Summary {
-            busy,
-            idle,
-            offline,
+            own_busy: busy,
+            own_online: busy + idle,
+            own_offline: offline,
+            pool_busy: 0,
             waiting,
             attention,
+            stale: false,
         }
     }
 
@@ -513,18 +519,17 @@ mod tests {
             "沒有 runner：只有中性圖示"
         );
         assert_eq!(
-            tray_title(&s(0, 0, 1, 2, Severity::Critical)),
+            tray_title(&s(0, 0, 1, 2, Severity::Ok)),
             "0▶ 2⏳",
             "只有離線 runner 也算有 runner"
         );
     }
 
     #[test]
-    fn icon_prefers_critical_over_warn_and_neutral_without_runners() {
+    fn icon_is_neutral_without_runners() {
         assert_eq!(tray_icon_for(Severity::Ok, true), "ok");
         assert_eq!(tray_icon_for(Severity::Warn, true), "warn");
-        assert_eq!(tray_icon_for(Severity::Critical, true), "critical");
-        for sev in [Severity::Ok, Severity::Warn, Severity::Critical] {
+        for sev in [Severity::Ok, Severity::Warn] {
             assert_eq!(tray_icon_for(sev, false), "neutral");
         }
     }
@@ -532,7 +537,7 @@ mod tests {
     #[test]
     fn has_runners_counts_every_state() {
         assert!(!has_runners(&s(0, 0, 0, 4, Severity::Warn)));
-        assert!(has_runners(&s(0, 0, 1, 0, Severity::Critical)));
+        assert!(has_runners(&s(0, 0, 1, 0, Severity::Ok)));
     }
 
     #[test]

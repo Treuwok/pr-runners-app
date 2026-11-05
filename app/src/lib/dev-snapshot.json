@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "generated_at": 1793620000,
   "accounts": [
     {
@@ -38,16 +38,16 @@
                 "url": "https://github.com/Acme/acme-app/actions/runs/11",
                 "runner_name": "mac-mini-1",
                 "hosted": false,
-                "blacksmith": false,
-                "typical_secs": 1620
+                "typical_secs": 1620,
+                "pool": null
               },
               "elapsed": {
                 "Known": {
                   "secs": 1860
                 }
               },
-              "attention": false,
-              "can_take": "CanTakeBusy"
+              "can_take": "CanTakeBusy",
+              "pool": null
             },
             {
               "key": "1/Acme/29",
@@ -75,16 +75,16 @@
                 "url": "https://github.com/Acme/acme-api/actions/runs/12",
                 "runner_name": "vps-1",
                 "hosted": false,
-                "blacksmith": false,
-                "typical_secs": 1620
+                "typical_secs": 1620,
+                "pool": null
               },
               "elapsed": {
                 "Known": {
                   "secs": 540
                 }
               },
-              "attention": false,
-              "can_take": null
+              "can_take": null,
+              "pool": null
             },
             {
               "key": "1/Acme/31",
@@ -105,8 +105,8 @@
               "group": "Default",
               "job": null,
               "elapsed": null,
-              "attention": true,
-              "can_take": null
+              "can_take": null,
+              "pool": null
             },
             {
               "key": "1/Acme/6",
@@ -121,8 +121,8 @@
               "group": "shared-linux",
               "job": null,
               "elapsed": null,
-              "attention": false,
-              "can_take": null
+              "can_take": null,
+              "pool": null
             },
             {
               "key": "1/Acme/30",
@@ -135,8 +135,8 @@
               "group": "ci-light",
               "job": null,
               "elapsed": null,
-              "attention": false,
-              "can_take": null
+              "can_take": null,
+              "pool": null
             }
           ],
           "waiting": [
@@ -156,8 +156,8 @@
                 "url": "https://github.com/Acme/acme-web/actions/runs/13",
                 "runner_name": null,
                 "hosted": false,
-                "blacksmith": false,
-                "typical_secs": null
+                "typical_secs": null,
+                "pool": null
               },
               "age": {
                 "Known": {
@@ -190,8 +190,8 @@
               "url": "https://github.com/Acme/acme-app/actions/runs/11",
               "runner_name": "mac-mini-1",
               "hosted": false,
-              "blacksmith": false,
-              "typical_secs": null
+              "typical_secs": null,
+              "pool": null
             },
             {
               "key": "12/2",
@@ -208,8 +208,8 @@
               "url": "https://github.com/Acme/acme-api/actions/runs/12",
               "runner_name": "vps-1",
               "hosted": false,
-              "blacksmith": false,
-              "typical_secs": null
+              "typical_secs": null,
+              "pool": null
             },
             {
               "key": "13/3",
@@ -226,8 +226,8 @@
               "url": "https://github.com/Acme/acme-web/actions/runs/13",
               "runner_name": null,
               "hosted": false,
-              "blacksmith": false,
-              "typical_secs": null
+              "typical_secs": null,
+              "pool": null
             },
             {
               "key": "14/4",
@@ -242,8 +242,8 @@
               "url": "https://github.com/Acme/acme-web/actions/runs/14",
               "runner_name": "GitHub Actions 3",
               "hosted": true,
-              "blacksmith": false,
-              "typical_secs": null
+              "typical_secs": null,
+              "pool": null
             }
           ],
           "last_updated_at": 1793620000
@@ -261,10 +261,12 @@
     }
   ],
   "summary": {
-    "busy": 2,
-    "idle": 2,
-    "offline": 1,
+    "own_busy": 2,
+    "own_online": 4,
+    "own_offline": 1,
+    "pool_busy": 0,
     "waiting": 1,
-    "attention": "Critical"
+    "attention": "Warn",
+    "stale": false
   }
 }

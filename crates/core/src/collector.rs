@@ -12,9 +12,7 @@ use crate::persist::{AccountKind, AccountMeta, clamp_hourly_target};
 use crate::runlog::{BackfillReport, RunLog, backfill_records};
 use crate::view::*;
 use futures_util::future::join_all;
-use pr_runners_rules::{
-    Attention, GroupAccess, ObservationState, is_blacksmith, needs_self_hosted,
-};
+use pr_runners_rules::{Attention, Fleet, GroupAccess, ObservationState, needs_self_hosted};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use tokio::sync::Semaphore;
@@ -353,12 +351,21 @@ async fn scan_repo(
         if jobs.is_empty() {
             continue;
         }
-        // PR 反查只在這個 run 真的有 self-hosted 或 Blacksmith job 要顯示時才做
-        // （ci-burst 把重 job 搬走後，整個 run 可能只剩 Blacksmith job，仍要帶 PR 標籤）
-        let tag = if jobs
-            .iter()
-            .any(|j| needs_self_hosted(&j.facts) || is_blacksmith(&j.facts))
-        {
+        // PR 反查只在這個 run 真的有 self-hosted 或臨時機器的 job 要顯示時才做
+        // （整個 run 可能只剩臨時機器的 job，仍要帶 PR 標籤）。這裡只看這個 run 的 runner 名稱形狀；
+        // 還在排隊、沒有 runner 名稱的臨時機器 job 認不出來，退回本地標籤。
+        let fleet = Fleet::observe(
+            jobs.iter().filter_map(|j| j.facts.runner_name.as_deref()),
+            jobs.iter()
+                .flat_map(|j| j.facts.labels.iter().map(String::as_str)),
+        );
+        let tag = if jobs.iter().any(|j| {
+            needs_self_hosted(&j.facts)
+                || j.facts
+                    .runner_name
+                    .as_deref()
+                    .is_some_and(|n| fleet.stem_of(n).is_some())
+        }) {
             match api::pr_tag(c, cache, &run).await {
                 Ok(t) => t,
                 Err(e) if e.is_account_wide() => return Err(e),
@@ -853,7 +860,8 @@ impl Collector {
     /// 全部帳號都被限流時，等到最早的解除時間，不受 600 秒上限截短。
     /// 只是配額偏低（< 20%）不算被限流：那只拉長間隔。
     pub fn next_delay(&self, snap: &Snapshot) -> Duration {
-        let has_work = snap.summary.busy > 0 || snap.summary.waiting > 0;
+        let has_work =
+            snap.summary.own_busy + snap.summary.pool_busy > 0 || snap.summary.waiting > 0;
         let base = base_delay_secs(has_work);
         let low_quota = self.accounts.iter().any(|a| a.client.rate().is_low());
         let projected = (self.last_incremental_cost.saturating_mul(3_600) / base)

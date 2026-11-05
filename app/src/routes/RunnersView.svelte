@@ -5,7 +5,7 @@
   import QueueSection from "$lib/components/QueueSection.svelte";
   import ScopeSection from "$lib/components/ScopeSection.svelte";
   import StatusFooter from "$lib/components/StatusFooter.svelte";
-  import { countVisible, dominantRepo, groupQueue, maxElapsedSecs, repoHues, repoName, summaryLine } from "$lib/view";
+  import { countVisible, dominantRepo, groupQueue, maxElapsedSecs, repoHues, repoName } from "$lib/view";
 
   let {
     snapshot,
@@ -44,19 +44,19 @@
   const groups = $derived(groupQueue(waiting));
   // 四格與下方清單用同一份（已依範圍篩選的）資料，選了單一範圍時數字才會對得上
   const sum = $derived(countVisible(runners, waiting.length));
-  // 顏色只給真的需要注意的：排隊超過門檻＝琥珀、離線超過門檻＝紅
+  // 顏色只給真的需要注意的：排隊超過門檻＝琥珀（離線不再有警告色）
   const queueWarn = $derived(waiting.some(({ w }) => w.attention));
-  const offlineBad = $derived(runners.some((r) => r.attention));
+  const ownOffline = $derived(runners.filter((r) => !r.pool && typeof r.state === "object").length);
 </script>
 
 {#if dominant}
   <div class="ctx"><i class="rdot rc{hues.get(dominant) ?? 0}" aria-hidden="true"></i><b>{dominant}</b></div>
 {/if}
-<div class="stats" role="group" aria-label={summaryLine(sum)}>
-  <div class="stat run"><b>{sum.busy}</b><span>忙碌</span></div>
-  <div class="stat"><b>{sum.idle}</b><span>閒置</span></div>
+<div class="stats" role="group" aria-label={`${sum.ownBusy}/${sum.ownOnline} 自家在忙`}>
+  <div class="stat run"><b>{sum.ownBusy + sum.poolBusy}</b><span>忙碌</span></div>
+  <div class="stat"><b>{sum.ownOnline - sum.ownBusy}</b><span>閒置</span></div>
   <div class="stat" class:warn={queueWarn}><b>{sum.waiting}</b><span>排隊</span></div>
-  <div class="stat" class:bad={offlineBad}><b>{sum.offline}</b><span>離線</span></div>
+  <div class="stat"><b>{ownOffline}</b><span>離線</span></div>
 </div>
 {#each scopes as { id, s } (id)}
   <ScopeSection scope={s} {dominant} {maxSecs} {hues} showTitle={scopes.length > 1} {limit} {onmore} {onopen} />

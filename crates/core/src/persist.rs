@@ -348,11 +348,13 @@ mod tests {
             generated_at: 7,
             accounts: Vec::new(),
             summary: Summary {
-                busy: 1,
-                idle: 2,
-                offline: 3,
+                own_busy: 1,
+                own_online: 2,
+                own_offline: 3,
+                pool_busy: 5,
                 waiting: 4,
                 attention: crate::view::Severity::Warn,
+                stale: false,
             },
         };
         save_snapshot(dir.path(), &snap).unwrap();
