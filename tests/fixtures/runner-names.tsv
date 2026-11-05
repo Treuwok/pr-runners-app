@@ -1,0 +1,27 @@
+# 臨時機器名稱案例表：Rust 單元測試（crates/rules/src/fleet.rs）與終端機工具測試（tests/run.sh）共用。
+# 欄位以 TAB 分隔：scenario  kind  value  expect  stem
+#   kind    runner = 名冊上的 runner 名稱；label = 這一輪某個 job 的 label
+#   expect  pool = 臨時機器；own = 自家機器；label 列填 -
+#   stem    臨時機器的組鍵（小寫）；own 與 label 列填 -
+# 同一個 scenario 的列一起餵給分類規則。scenario 以 labels- 開頭的情境需要 job label（規則 c），終端機工具沒有抓，測試會跳過。
+real	runner	blacksmith-8vcpu-ubuntu-2404-4xrpwldxcceymzb7	pool	blacksmith-8vcpu-ubuntu-2404
+real	runner	blacksmith-2vcpu-ubuntu-2404-viscg7izfxhqgmq2	pool	blacksmith-2vcpu-ubuntu-2404
+real	runner	netcup-debian13-vps	own	-
+single	runner	pool-8x-linux-q7k2m9x4b1c8d3e5	pool	pool-8x-linux
+short-tail	runner	acme-runner-a1b2c3d4e	own	-
+upper-tail	runner	acme-runner-A1B2C3D4E5F6	own	-
+digits-only-tail	runner	acme-runner-1234567890123456	own	-
+no-dash	runner	macmini	own	-
+letters-with-sibling	runner	pool-8x-linux-abcdefghijklmnop	pool	pool-8x-linux
+letters-with-sibling	runner	pool-8x-linux-a1b2c3d4e5f6g7h8	pool	pool-8x-linux
+letters-alone	runner	pool-8x-linux-abcdefghijklmnop	own	-
+letters-other-stem	runner	pool-8x-linux-abcdefghijklmnop	own	-
+letters-other-stem	runner	pool-2x-linux-a1b2c3d4e5f6g7h8	pool	pool-2x-linux
+labels-letters-match-label	runner	pool-8x-linux-abcdefghijklmnop	pool	pool-8x-linux
+labels-letters-match-label	label	pool-8x-linux	-	-
+labels-case-differs	runner	pool-8x-linux-abcdefghijklmnop	pool	pool-8x-linux
+labels-case-differs	label	Pool-8X-Linux	-	-
+labels-unrelated-label	runner	pool-8x-linux-abcdefghijklmnop	own	-
+labels-unrelated-label	label	self-hosted	-	-
+accepted-false-positive	runner	runner-a1b2c3d4e5	pool	runner
+mixed-case-stem	runner	Pool-8X-Linux-q7k2m9x4b1c8d3e5	pool	pool-8x-linux
