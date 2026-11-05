@@ -4,6 +4,9 @@
 //! `+N`（正在跑的臨時機器）→ 排隊小牌。沒有 runner 時只畫一個空心格。資料過時時整張半透明。
 //! 數字用 Inter（OFL 授權，檔案與授權一起放在 `icons/tray/`），不打包 SF Pro。
 
+// macOS 用 render_menubar、其他平台用 render_square：各平台只會用到其中一個
+#![cfg_attr(not(test), allow(dead_code))]
+
 use ab_glyph::{Font, FontRef, ScaleFont};
 use pr_runners_core::view::{Severity, Summary};
 use std::sync::OnceLock;

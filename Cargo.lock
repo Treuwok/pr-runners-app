@@ -2957,6 +2957,7 @@ name = "pr-runners-app"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "objc2",
  "pr-runners-core",
  "pr-runners-rules",
  "serde",

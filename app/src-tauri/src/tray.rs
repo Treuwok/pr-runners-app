@@ -1,50 +1,28 @@
-//! macOS 選單列：計數文字＋狀態圖示，左鍵點開小視窗（popover）。
-//! 文字與圖示只由 Rust 端算（前端不重寫一份）。
+//! 選單列（macOS）與系統匣（Windows）：圖示由 `tray_icon` 依 `Summary` 即時畫出，左鍵點開小視窗（popover）。
+//! 文字（tooltip）與圖示只由 Rust 端算（前端不重寫一份）。
 
-use pr_runners_core::view::{Severity, Summary};
+use pr_runners_core::view::Summary;
 
-/// 選單列計數：`{busy}▶`，有等待時加 ` {waiting}⏳`；沒有任何 runner 時是空字串（只顯示中性圖示）。
-pub fn tray_title(s: &Summary) -> String {
-    if !has_runners(s) {
-        return String::new();
-    }
-    let busy = s.own_busy + s.pool_busy;
-    if s.waiting > 0 {
-        format!("{busy}▶ {}⏳", s.waiting)
-    } else {
-        format!("{busy}▶")
-    }
-}
-
-/// 無 runner → neutral；排隊太久是橘。（Task 8 會整個換成依數字畫的小圖。）
-pub fn tray_icon_for(sev: Severity, has_runners: bool) -> &'static str {
-    if !has_runners {
-        return "neutral";
-    }
-    match sev {
-        Severity::Ok => "ok",
-        Severity::Warn => "warn",
-    }
-}
-
+/// 有沒有 runner（決定是否畫中性的空心格）：只看自家機器與正在跑的臨時機器，離線的臨時機器殘骸不算。
 pub fn has_runners(s: &Summary) -> bool {
     s.own_online + s.own_offline + s.pool_busy > 0
 }
 
-/// 系統匣圖示的提示文字。Windows 的系統匣不能顯示文字，計數只看得到這裡（macOS 也會顯示）。
+/// 圖示的提示文字：`自家 2/5 在忙 · 臨時 9 台在跑 · 排隊 1`。沒有臨時機器在跑時省略中段；
+/// 離線只算自家機器，0 台時省略。Windows 的系統匣放不下數字，計數只看得到這裡。
 pub fn tray_tooltip(s: &Summary) -> String {
     if !has_runners(s) {
         return "pr-runners".into();
     }
-    let mut parts = vec![
-        format!("{} 忙碌", s.own_busy + s.pool_busy),
-        format!("{} 閒置", s.own_online - s.own_busy),
-    ];
-    if s.own_offline > 0 {
-        parts.push(format!("{} 離線", s.own_offline));
+    let mut parts = vec![format!("自家 {}/{} 在忙", s.own_busy, s.own_online)];
+    if s.pool_busy > 0 {
+        parts.push(format!("臨時 {} 台在跑", s.pool_busy));
     }
-    parts.push(format!("{} 排隊", s.waiting));
-    format!("pr-runners · {}", parts.join(" · "))
+    parts.push(format!("排隊 {}", s.waiting));
+    if s.own_offline > 0 {
+        parts.push(format!("離線 {}", s.own_offline));
+    }
+    parts.join(" · ")
 }
 
 /// 一個螢幕：位置與大小用該螢幕自己的縮放比例換成實體像素（macOS／tao 的慣例），`scale` 是那個比例。
@@ -125,7 +103,13 @@ pub fn main_nav_event(settings: bool) -> &'static str {
 #[cfg(desktop)]
 mod desktop {
     use super::*;
+    use crate::tray_icon::Ink;
+    #[cfg(target_os = "macos")]
+    use crate::tray_icon::render_menubar;
+    #[cfg(not(target_os = "macos"))]
+    use crate::tray_icon::render_square;
     use pr_runners_core::persist::{load_settings, save_settings};
+    use pr_runners_core::view::Severity;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use tauri::image::Image;
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -159,14 +143,113 @@ mod desktop {
             .unwrap_or(0)
     }
 
-    fn icon(name: &str) -> Option<Image<'static>> {
-        let bytes: &[u8] = match name {
-            "ok" => include_bytes!("../icons/tray/ok@2x.png"),
-            "warn" => include_bytes!("../icons/tray/warn@2x.png"),
-            "critical" => include_bytes!("../icons/tray/critical@2x.png"),
-            _ => include_bytes!("../icons/tray/neutral@2x.png"),
+    /// 沒有任何資料時的初始圖示：中性的空心格。
+    fn empty_summary() -> Summary {
+        Summary {
+            own_busy: 0,
+            own_online: 0,
+            own_offline: 0,
+            pool_busy: 0,
+            waiting: 0,
+            attention: Severity::Ok,
+            stale: false,
+        }
+    }
+
+    /// 最近一次收到的 `Summary` 與畫出去時用的墨水：選單列深淺改變時要用同一份資料重畫。
+    static LAST_SUMMARY: std::sync::Mutex<Option<Summary>> = std::sync::Mutex::new(None);
+    static LAST_INK: std::sync::Mutex<Option<Ink>> = std::sync::Mutex::new(None);
+
+    /// macOS：讀選單列圖示按鈕自己的外觀（不是 App 主題：新版 macOS 的選單列會依桌布變深變淺）。
+    /// 回傳外觀名稱（例如 `NSAppearanceNameDarkAqua`）；讀不到就是 `None`。
+    #[cfg(target_os = "macos")]
+    fn menubar_appearance_name(app: &AppHandle) -> Option<String> {
+        use objc2::{msg_send, rc::Retained, runtime::AnyObject};
+        let tray = app.tray_by_id(TRAY_ID)?;
+        tray.with_inner_tray_icon(|inner| {
+            let item = inner.ns_status_item()?;
+            // SAFETY：with_inner_tray_icon 在主執行緒執行；這些都是 AppKit 的唯讀屬性，回傳值可能是 nil（Option）。
+            unsafe {
+                let button: Option<Retained<AnyObject>> = msg_send![&*item, button];
+                let appearance: Option<Retained<AnyObject>> =
+                    msg_send![&*button?, effectiveAppearance];
+                let name: Option<Retained<AnyObject>> = msg_send![&*appearance?, name];
+                let c: *const std::ffi::c_char = msg_send![&*name?, UTF8String];
+                if c.is_null() {
+                    return None;
+                }
+                std::ffi::CStr::from_ptr(c).to_str().ok().map(str::to_owned)
+            }
+        })
+        .ok()
+        .flatten()
+    }
+
+    /// 這次要用哪種墨水。平常一律樣板圖（系統自動配深淺色）；只有排隊太久、而且讀得到選單列外觀時，
+    /// 才依外觀畫黑或白，好讓小牌用橘色。
+    fn ink_for(app: &AppHandle, s: &Summary) -> Ink {
+        #[cfg(target_os = "macos")]
+        if s.attention == Severity::Warn {
+            let name = menubar_appearance_name(app);
+            if std::env::var_os("PR_RUNNERS_TRAY_DEBUG").is_some() {
+                eprintln!("[tray] 選單列外觀：{name:?}");
+            }
+            if let Some(name) = name {
+                return if name.contains("Dark") {
+                    Ink::Dark
+                } else {
+                    Ink::Light
+                };
+            }
+        }
+        let _ = (app, s);
+        Ink::Template
+    }
+
+    fn art_image(s: &Summary, ink: Ink) -> (Image<'static>, bool) {
+        #[cfg(target_os = "macos")]
+        let art = render_menubar(s, ink, 2.0);
+        #[cfg(not(target_os = "macos"))]
+        let art = {
+            let _ = ink;
+            render_square(s, 2.0)
         };
-        Image::from_bytes(bytes).ok()
+        let template = art.template;
+        (Image::new_owned(art.rgba, art.width, art.height), template)
+    }
+
+    fn apply(app: &AppHandle, s: &Summary, ink: Ink) {
+        let Some(tray) = app.tray_by_id(TRAY_ID) else {
+            return;
+        };
+        let (img, template) = art_image(s, ink);
+        let _ = tray.set_icon(Some(img));
+        let _ = tray.set_icon_as_template(template);
+        // 數字都畫進圖裡了，不再用 set_title 放文字
+        let _ = tray.set_title(None::<String>);
+        let _ = tray.set_tooltip(Some(tray_tooltip(s)));
+        *LAST_INK.lock().expect("last ink") = Some(ink);
+    }
+
+    /// 選單列深淺改變（切換深淺色、換桌布）時重畫。只有橘色狀態（依外觀畫黑或白）才會受影響，
+    /// 所以平常什麼都不做；每 2 秒看一次，沒變就不重畫。
+    #[cfg(target_os = "macos")]
+    fn watch_appearance(app: AppHandle) {
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let Some(s) = LAST_SUMMARY.lock().expect("last summary").clone() else {
+                    continue;
+                };
+                if s.attention != Severity::Warn {
+                    continue;
+                }
+                let ink = ink_for(&app, &s);
+                if *LAST_INK.lock().expect("last ink") != Some(ink) {
+                    apply(&app, &s, ink);
+                }
+            }
+        });
     }
 
     fn hide_popover(w: &WebviewWindow) {
@@ -194,7 +277,10 @@ mod desktop {
     /// 縮放事件：和程式最後一次要求的大小差很多，才是使用者拖的，記下新大小。
     fn on_popover_resized(w: &WebviewWindow, size: &tauri::PhysicalSize<u32>) {
         let scale = w.scale_factor().unwrap_or(1.0);
-        let actual = (f64::from(size.width) / scale, f64::from(size.height) / scale);
+        let actual = (
+            f64::from(size.width) / scale,
+            f64::from(size.height) / scale,
+        );
         if actual.0 < 1.0 || actual.1 < 1.0 {
             return; // 收起或最小化時的 0 大小
         }
@@ -275,8 +361,8 @@ mod desktop {
 
     pub fn setup(app: &tauri::App) -> tauri::Result<()> {
         TrayIconBuilder::with_id(TRAY_ID)
-            .icon(icon("neutral").expect("內建圖示"))
-            .icon_as_template(false)
+            .icon(art_image(&empty_summary(), Ink::Template).0)
+            .icon_as_template(cfg!(target_os = "macos"))
             .show_menu_on_left_click(false)
             .tooltip("pr-runners")
             .on_tray_icon_event(|tray, event| {
@@ -292,6 +378,8 @@ mod desktop {
             })
             .build(app)?;
 
+        #[cfg(target_os = "macos")]
+        watch_appearance(app.handle().clone());
         if let Ok(dir) = app.path().app_data_dir() {
             let _ = DATA_DIR.set(dir.clone());
             // 上次拖出來的大小：有就沿用（之後不再自動調整高度）
@@ -331,17 +419,10 @@ mod desktop {
         Ok(())
     }
 
-    /// 每次收到 snapshot：更新文字與圖示。
+    /// 每次收到 snapshot：重畫圖示、更新 tooltip。
     pub fn update(app: &AppHandle, summary: &Summary) {
-        let Some(tray) = app.tray_by_id(TRAY_ID) else {
-            return;
-        };
-        let title = tray_title(summary);
-        let _ = tray.set_title(if title.is_empty() { None } else { Some(title) });
-        let _ = tray.set_tooltip(Some(tray_tooltip(summary)));
-        if let Some(img) = icon(tray_icon_for(summary.attention, has_runners(summary))) {
-            let _ = tray.set_icon(Some(img));
-        }
+        *LAST_SUMMARY.lock().expect("last summary") = Some(summary.clone());
+        apply(app, summary, ink_for(app, summary));
     }
 
     /// 顯示主視窗並切到指定頁：`settings` 為 true 是設定頁，否則是 Runners（不帶篩選）。
@@ -476,7 +557,10 @@ mod tests {
 
     #[test]
     fn only_a_clearly_different_size_counts_as_the_user_dragging() {
-        assert!(!user_resized((400.0, 560.0), (401.0, 559.0)), "差 1px 是程式自己改的");
+        assert!(
+            !user_resized((400.0, 560.0), (401.0, 559.0)),
+            "差 1px 是程式自己改的"
+        );
         assert!(user_resized((400.0, 560.0), (440.0, 560.0)));
         assert!(user_resized((400.0, 560.0), (400.0, 520.0)));
     }
@@ -566,84 +650,58 @@ mod tests {
         assert_eq!((x, y, scale), (1920.0 - 400.0 - 8.0, 1040.0 - 560.0, 1.5));
     }
 
+    fn sum(
+        own_busy: u32,
+        own_online: u32,
+        own_offline: u32,
+        pool_busy: u32,
+        waiting: u32,
+    ) -> Summary {
+        Summary {
+            own_busy,
+            own_online,
+            own_offline,
+            pool_busy,
+            waiting,
+            attention: pr_runners_core::view::Severity::Ok,
+            stale: false,
+        }
+    }
+
     #[test]
     fn tooltip_carries_the_counts_windows_cannot_show_next_to_the_icon() {
-        assert_eq!(tray_tooltip(&s(0, 0, 0, 0, Severity::Ok)), "pr-runners");
+        assert_eq!(tray_tooltip(&sum(0, 0, 0, 0, 0)), "pr-runners");
         assert_eq!(
-            tray_tooltip(&s(4, 1, 0, 7, Severity::Warn)),
-            "pr-runners · 4 忙碌 · 1 閒置 · 7 排隊"
+            tray_tooltip(&sum(2, 5, 0, 9, 1)),
+            "自家 2/5 在忙 · 臨時 9 台在跑 · 排隊 1",
+            "有臨時機器"
         );
         assert_eq!(
-            tray_tooltip(&s(1, 0, 2, 0, Severity::Ok)),
-            "pr-runners · 1 忙碌 · 0 閒置 · 2 離線 · 0 排隊"
+            tray_tooltip(&sum(4, 5, 0, 0, 7)),
+            "自家 4/5 在忙 · 排隊 7",
+            "沒有臨時機器：省略那一段"
         );
+        assert_eq!(
+            tray_tooltip(&sum(1, 1, 2, 0, 0)),
+            "自家 1/1 在忙 · 排隊 0 · 離線 2",
+            "有自家離線"
+        );
+    }
+
+    #[test]
+    fn has_runners_ignores_offline_pool_leftovers() {
+        // 臨時機器全部結束（開關關了）：名冊上只剩離線殘骸，Summary 裡沒有任何計數
+        assert!(!has_runners(&sum(0, 0, 0, 0, 4)));
+        assert!(
+            has_runners(&sum(0, 0, 1, 0, 0)),
+            "只有離線的自家機器也算有 runner"
+        );
+        assert!(has_runners(&sum(0, 0, 0, 3, 0)), "只有臨時機器在跑也算");
     }
 
     #[test]
     fn opening_main_window_always_names_a_destination() {
         assert_eq!(main_nav_event(true), "goto-settings");
         assert_eq!(main_nav_event(false), "goto-runners");
-    }
-
-    /// 測試用：全部算成自家機器（臨時機器的計數 Task 8 才接上選單列）。
-    fn s(busy: u32, idle: u32, offline: u32, waiting: u32, attention: Severity) -> Summary {
-        Summary {
-            own_busy: busy,
-            own_online: busy + idle,
-            own_offline: offline,
-            pool_busy: 0,
-            waiting,
-            attention,
-            stale: false,
-        }
-    }
-
-    #[test]
-    fn title_shows_busy_count_and_waiting() {
-        assert_eq!(tray_title(&s(2, 1, 1, 1, Severity::Warn)), "2▶ 1⏳");
-        assert_eq!(
-            tray_title(&s(0, 3, 0, 0, Severity::Ok)),
-            "0▶",
-            "有 runner 但都閒置"
-        );
-        assert_eq!(tray_title(&s(5, 0, 0, 0, Severity::Ok)), "5▶");
-        assert_eq!(
-            tray_title(&s(0, 0, 0, 0, Severity::Ok)),
-            "",
-            "沒有 runner：只有中性圖示"
-        );
-        assert_eq!(
-            tray_title(&s(0, 0, 1, 2, Severity::Ok)),
-            "0▶ 2⏳",
-            "只有離線 runner 也算有 runner"
-        );
-    }
-
-    #[test]
-    fn icon_is_neutral_without_runners() {
-        assert_eq!(tray_icon_for(Severity::Ok, true), "ok");
-        assert_eq!(tray_icon_for(Severity::Warn, true), "warn");
-        for sev in [Severity::Ok, Severity::Warn] {
-            assert_eq!(tray_icon_for(sev, false), "neutral");
-        }
-    }
-
-    #[test]
-    fn has_runners_counts_every_state() {
-        assert!(!has_runners(&s(0, 0, 0, 4, Severity::Warn)));
-        assert!(has_runners(&s(0, 0, 1, 0, Severity::Ok)));
-    }
-
-    #[test]
-    fn tray_icon_files_exist_at_1x_and_2x() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("icons/tray");
-        for n in ["neutral", "ok", "warn", "critical"] {
-            for suffix in ["", "@2x"] {
-                assert!(
-                    dir.join(format!("{n}{suffix}.png")).exists(),
-                    "{n}{suffix}.png"
-                );
-            }
-        }
     }
 }
