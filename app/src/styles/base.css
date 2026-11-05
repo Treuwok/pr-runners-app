@@ -43,7 +43,9 @@ main{flex:1;padding-bottom:var(--main-pad-bottom,8px)}
 .lane .t small{display:block;font-size:12px}
 .lane .t.over{color:var(--tag);font-weight:600}
 .lane .t.over small{font-weight:400;color:var(--muted)}
-@container (max-width:559px){
+/* 寬版型的固定欄（名稱 15rem＋進度條 5rem＋時間 9.5rem＋間距）已佔約 540px，工作名稱至少還要 ~180px：
+   欄寬不到 720px 就用窄版型。兩欄時每欄約 560–600px，用舊的 559px 門檻會把工作名稱擠成直排。 */
+@container (max-width:719px){
   .lane{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"who t" "job job" "meter meter";gap:4px 12px}
   .lane .who{grid-area:who}.lane .t{grid-area:t}.lane .job{grid-area:job}.lane .meter{grid-area:meter}
 }
