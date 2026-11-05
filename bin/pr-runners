@@ -104,9 +104,13 @@ _scan_repo() {
       # shellcheck disable=SC2016  # 單引號內的 $s 是 jq 變數，不是 shell 變數
       jobs=$(gh api "repos/$full/actions/runs/$rid/jobs?per_page=100" --paginate --jq '
         .jobs[]
+        # 臨時機器的 job 常常只帶機型標籤、沒有 self-hosted：名稱最後一段是 ≥10 碼、同時含數字與字母的
+        # 小寫英數亂數（規則 a）也算，不然沒有 admin:org 時整組臨時機器會少算或整個看不到
+        | ([ (.runner_name // "") | capture("^(?<h>.+)-(?<t>[a-z0-9]{10,})$") ] | .[0]) as $pc
         | select(.status=="in_progress"
-                 and ((.labels//[])|index("self-hosted"))
-                 and .runner_name)
+                 and .runner_name
+                 and (((.labels//[])|index("self-hosted"))
+                      or ($pc != null and ($pc.t | test("[0-9]")) and ($pc.t | test("[a-z]")))))
         | (if .started_at then (now-(.started_at|fromdateiso8601)) else 0 end) as $s
         # 負值＝GitHub 回的 started_at 在未來（GitHub 端時間戳偏移），算不出已跑多久，
         # 標 ⚠? 而不是印出 -51m-5s 這種誤導人的數字；呼叫端看到 ⚠? 會在底部加註。

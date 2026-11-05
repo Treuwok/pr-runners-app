@@ -107,6 +107,8 @@ expect_has "退回只顯示忙碌" "🟢 runner-a"
 expect_has "授權提示" "gh auth refresh -h github.com -s admin:org"
 expect_not "不把 403 的 JSON 當成 runner 名" 'Must have admin'
 expect_has "忙碌清單（沒有名冊的路徑）臨時機器也歸組" "pool 8x-linux"
+expect_has "只帶機型標籤（沒有 self-hosted）的臨時機器 job 也算：2 台都在跑" "pool 8x-linux          2 在跑"
+expect_has "兩個 job 都在組內摘要裡" "CI → integration"
 expect_not "忙碌清單不列出亂數 runner 名稱" 'q7k2m9x4b1c8d3e5|z8y7x6w5v4u3t2s1'
 
 echo "PR 檢視（--local）"
