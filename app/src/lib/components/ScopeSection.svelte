@@ -68,6 +68,7 @@
         {/if}
         {#if split.idle.length > 0}
           <p class="idles">
+            <span class="idle-label">閒置 {split.idle.length}</span>
             {#each split.idle as r (r.key)}
               <button class="idle" title="查看執行歷史" onclick={() => onopen(r.key)}>
                 <i class="dot idle" aria-hidden="true"></i>{r.name}
