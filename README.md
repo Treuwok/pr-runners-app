@@ -124,9 +124,21 @@ xcrun simctl boot "iPhone 17" && xcrun simctl install booted src-tauri/gen/apple
 xcrun simctl launch booted com.treuwok.prrunners
 
 # iOS（實機）：接上 iPhone、在 Xcode 開 gen/apple 專案選你的裝置，或 pnpm tauri ios dev
-# iOS（TestFlight）：封存並匯出 .ipa，再用 Xcode Organizer 或 Transporter 上傳到 App Store Connect
-pnpm tauri ios build --export-method app-store-connect --ci
+# iOS（TestFlight）：封存並匯出 .ipa，再用 Xcode Organizer 或 Transporter 上傳到 App Store Connect。
+# 每次上傳的 build 編號（CFBundleVersion）不能重複，用 --config 帶一個比上次大的數字
+pnpm tauri ios build --export-method app-store-connect --ci \
+  --config '{"bundle":{"iOS":{"bundleVersion":"2"}}}'
 ```
+
+**iOS 的 client ID 要用 `app/.cargo/config.toml` 注入，不能只 `export`。** `pnpm tauri ios build` 會清掉環境變數，Rust 編譯那一步看不到 `PR_RUNNERS_GITHUB_CLIENT_ID`，編出來的 App 登入頁會顯示「此版本未設定 GitHub App」。改在 `app/.cargo/config.toml` 寫（這個檔案已在 `.gitignore`，不要 commit）：
+
+```toml
+[env]
+PR_RUNNERS_GITHUB_CLIENT_ID = "<pr-runners-dev 的 client ID>"
+PR_RUNNERS_GITHUB_APP_SLUG = "pr-runners-dev"
+```
+
+建完後可以用 `strings -a <封存檔>/Products/Applications/pr-runners.app/pr-runners | grep -c <client ID>` 確認有編進去（要大於 0）再上傳。
 
 iOS 版與 Android 版的差別與限制：
 
