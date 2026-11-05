@@ -2,6 +2,9 @@ mod commands;
 mod poller;
 mod state;
 mod tray;
+// Task 8 才接上選單列；在那之前只有測試用到
+#[allow(dead_code)]
+mod tray_icon;
 
 use pr_runners_core::auth::{CLIENT_ID, DeviceFlow};
 use pr_runners_core::persist::{
