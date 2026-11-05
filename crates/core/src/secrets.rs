@@ -137,6 +137,17 @@ pub fn init_native_store() -> Result<(), SecretError> {
     Ok(())
 }
 
+/// iOS：把 Apple Protected Data（Data Protection 金鑰庫）設為 `keyring-core` 的 default store。App 啟動時呼叫一次。
+/// 需要 App 以 provisioning profile 簽章（Xcode 簽章的模擬器／實機 build 都有）；沒簽章會得到 `-34018`。
+/// 不同步到 iCloud（token 只留在這支手機）；沿用 App 預設的 access group。
+#[cfg(target_os = "ios")]
+pub fn init_native_store() -> Result<(), SecretError> {
+    let store = apple_native_keyring_store::protected::Store::new()
+        .map_err(|e| SecretError::Store(e.to_string()))?;
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
 /// Windows：把認證管理員（Credential Manager）設為 `keyring-core` 的 default store。App 啟動時呼叫一次。
 /// 注意：它不保證不同執行緒對同一筆紀錄的操作順序；這裡的寫入（登入、續期）與讀取（下一輪輪詢）相隔數秒。
 #[cfg(target_os = "windows")]

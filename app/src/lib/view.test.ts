@@ -8,6 +8,9 @@ import type { JobRecord } from "./generated/JobRecord";
 import type { WaitingView } from "./generated/WaitingView";
 import type { Summary } from "./generated/Summary";
 import {
+  detectPlatform,
+  isDesktop,
+  isMobile,
   splitRunners,
   waitLabel,
   accountNote,
@@ -532,5 +535,31 @@ describe("waitLabel", () => {
       [2, "等 pool 8x-linux"],
       [1, "等 pool 16x-linux"],
     ]);
+  });
+});
+
+describe("detectPlatform / isDesktop / isMobile", () => {
+  it("優先用 Tauri 的作業系統名稱", () => {
+    expect(detectPlatform("ios", "")).toBe("ios");
+    expect(detectPlatform("android", "")).toBe("android");
+    expect(detectPlatform("windows", "")).toBe("windows");
+    expect(detectPlatform("macos", "")).toBe("mac");
+    expect(detectPlatform("linux", "")).toBe("mac");
+  });
+  it("沒有作業系統名稱時看 userAgent（瀏覽器預覽）", () => {
+    expect(detectPlatform(null, "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)")).toBe("ios");
+    expect(detectPlatform(null, "Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X)")).toBe("ios");
+    expect(detectPlatform(null, "Mozilla/5.0 (Linux; Android 15)")).toBe("android");
+    expect(detectPlatform(null, "Mozilla/5.0 (Windows NT 10.0)")).toBe("windows");
+    expect(detectPlatform(null, "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")).toBe("mac");
+  });
+  it("行動版（android、ios）不是桌面版", () => {
+    expect(isDesktop("mac")).toBe(true);
+    expect(isDesktop("windows")).toBe(true);
+    expect(isDesktop("android")).toBe(false);
+    expect(isDesktop("ios")).toBe(false);
+    expect(isMobile("ios")).toBe(true);
+    expect(isMobile("android")).toBe(true);
+    expect(isMobile("mac")).toBe(false);
   });
 });

@@ -16,5 +16,8 @@ app/src-tauri/gen/android/**/.idea/
 
 .DS_Store
 
+# iOS：Xcode 專案由 project.yml 產生（pnpm tauri ios init），裡面會被寫入簽章用的 Team ID，不進公開 repo
+app/src-tauri/gen/apple/*.xcodeproj/
+
 # Playwright 截圖暫存
 .playwright-mcp/

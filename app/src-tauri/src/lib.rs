@@ -1,7 +1,10 @@
 mod commands;
 mod poller;
 mod state;
+// 選單列／系統匣只有桌面版有
+#[cfg(desktop)]
 mod tray;
+#[cfg(desktop)]
 mod tray_icon;
 
 use pr_runners_core::auth::{CLIENT_ID, DeviceFlow};
@@ -74,9 +77,14 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            // macOS：Keychain；Windows：認證管理員；Android：Keystore＋SharedPreferences（需要 Tauri 已提供 application context，
-            // 所以在 setup 裡建立）。兩者都是 keyring-core 的 default store。
-            #[cfg(any(target_os = "macos", target_os = "android", target_os = "windows"))]
+            // macOS：Keychain；Windows：認證管理員；iOS：Data Protection 金鑰庫；Android：Keystore＋SharedPreferences
+            // （需要 Tauri 已提供 application context，所以在 setup 裡建立）。都是 keyring-core 的 default store。
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "ios",
+                target_os = "android",
+                target_os = "windows"
+            ))]
             pr_runners_core::secrets::init_native_store()
                 .map_err(|e| format!("無法使用系統金鑰庫：{e}"))?;
 

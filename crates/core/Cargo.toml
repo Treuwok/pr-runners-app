@@ -27,6 +27,11 @@ wiremock = "0.6.5"
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
 
+# iOS 只能用 protected（Data Protection）金鑰庫，而且 App 必須用 provisioning profile 簽章；
+# 沒簽章會得到 -34018（缺少 entitlement）。macOS 繼續用 keychain。
+[target.'cfg(target_os = "ios")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["protected"] }
+
 [target.'cfg(target_os = "android")'.dependencies]
 android-native-keyring-store = "1"
 
