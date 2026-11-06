@@ -27,3 +27,6 @@ html.ios main{padding-bottom:max(var(--main-pad-bottom),calc(env(safe-area-inset
 html.ios,html.ios body{overscroll-behavior-y:none}
 /* 手機上的連結要好點：至少 44px 高 */
 html.ios .link{min-height:44px;padding:12px 0;display:inline-flex;align-items:center}
+/* 底部 Tab bar：選中的 tab 用藍色（--run 對比夠）著色，不畫膠囊；按下變淡 */
+html.ios .bottom button.on{color:var(--run)}
+html.ios .bottom button:active{opacity:.6}
