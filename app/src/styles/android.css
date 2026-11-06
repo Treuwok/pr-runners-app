@@ -21,3 +21,8 @@ html.android{
 html.android .app{padding-top:max(env(safe-area-inset-top),28px)}
 /* 手機上的連結要好點：至少 44px 高 */
 html.android .link{min-height:44px;padding:12px 0;display:inline-flex;align-items:center}
+/* 底部導覽（Material 3）：選中的 icon 後面是膠囊，文字加粗用正常字色；按下時膠囊淡淡浮現 */
+html.android .bottom{border-top:0}
+html.android .bottom button.on{color:var(--fg)}
+html.android .bottom button.on .ico{background:var(--chip)}
+html.android .bottom button:active .ico{background:var(--chip)}

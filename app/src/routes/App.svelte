@@ -88,6 +88,27 @@
   });
 </script>
 
+<!-- 底部導覽的圖示：同一套 24px、1.8 線寬的線條圖；選中時 .f 的部分填滿（Runners＝四格 runner，和 App 圖示同一個語彙） -->
+{#snippet tabIcon(id: string)}
+  <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    {#if id === "runners"}
+      <rect class="f" x="3.5" y="3.5" width="7" height="7" rx="2" />
+      <rect x="13.5" y="3.5" width="7" height="7" rx="2" />
+      <rect x="3.5" y="13.5" width="7" height="7" rx="2" />
+      <rect class="f" x="13.5" y="13.5" width="7" height="7" rx="2" />
+    {:else if id === "jobs"}
+      <path d="M9.5 6.5h11M9.5 12h11M9.5 17.5h11" />
+      <circle class="f" cx="4.5" cy="6.5" r="1.4" />
+      <circle class="f" cx="4.5" cy="12" r="1.4" />
+      <circle class="f" cx="4.5" cy="17.5" r="1.4" />
+    {:else}
+      <path d="M3.5 7h9M18.5 7h2M3.5 17h3M12.5 17h8" />
+      <circle class="f" cx="15.5" cy="7" r="2.4" />
+      <circle class="f" cx="9.5" cy="17" r="2.4" />
+    {/if}
+  </svg>
+{/snippet}
+
 <div class="app {platform}">
   {#if isMock()}<p class="mock-banner" role="status">示意資料（mock）— 不是真實的 runner 狀態</p>{/if}
   {#if !store.loaded}
@@ -159,7 +180,9 @@
     {#if isMobile(platform)}
       <nav class="bottom" aria-label="頁面">
         {#each [["runners", "Runners"], ["jobs", "Jobs"], ["settings", "設定"]] as [id, label] (id)}
-          <button class:on={tab === id} aria-current={tab === id ? "page" : undefined} onclick={() => ((tab = id as Tab), (historyKey = null))}><i></i>{label}</button>
+          <button class:on={tab === id} aria-current={tab === id ? "page" : undefined} onclick={() => ((tab = id as Tab), (historyKey = null))}>
+            <span class="ico">{@render tabIcon(id)}</span>{label}
+          </button>
         {/each}
       </nav>
     {/if}

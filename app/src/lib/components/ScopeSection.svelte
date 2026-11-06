@@ -67,14 +67,14 @@
           </div>
         {/if}
         {#if split.idle.length > 0}
-          <p class="idles">
-            <span class="idle-label">閒置 {split.idle.length}</span>
+          <div class="sub"><span>閒置 {split.idle.length}</span></div>
+          <div class="card idle-list">
             {#each split.idle as r (r.key)}
-              <button class="idle" title="查看執行歷史" onclick={() => onopen(r.key)}>
-                <i class="dot idle" aria-hidden="true"></i>{r.name}
+              <button class="idle-row" title="查看執行歷史" onclick={() => onopen(r.key)}>
+                <i class="dot idle" aria-hidden="true"></i><span class="nm">{r.name}</span>
               </button>
             {/each}
-          </p>
+          </div>
         {/if}
       </div>
       {#if split.pools.length > 0}

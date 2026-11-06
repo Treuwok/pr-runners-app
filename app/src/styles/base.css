@@ -66,7 +66,7 @@ button.qj:hover{background:var(--chip)}
 .row .n{display:block;font-weight:600;font-size:var(--fs-name,17px);overflow-wrap:anywhere}
 .row .j{display:block;color:var(--muted);font-size:14px;margin-top:1px}
 .dot{width:8px;height:8px;border-radius:50%;flex:none}
-.dot.busy{background:var(--run)}.dot.idle{background:var(--gray)}.dot.offline{background:var(--gray)}
+.dot.busy{background:var(--run)}.dot.idle{background:var(--green)}.dot.offline{background:var(--gray)}
 .dot.alert{background:var(--red)}
 .empty,.note,.hint{color:var(--muted);font-size:14px;padding:6px 16px}
 .status{padding:8px 16px;color:var(--muted);font-size:14px}
@@ -92,11 +92,12 @@ button.qj:hover{background:var(--chip)}
 .sk-row{height:40px;border-radius:8px;background:linear-gradient(90deg,var(--chip),transparent,var(--chip));background-size:200% 100%;animation:sk 1.4s linear infinite}
 @keyframes sk{to{background-position:-200% 0}}
 @media (prefers-reduced-motion:reduce){.sk-row{animation:none}}
-.bottom{position:sticky;bottom:0;display:flex;justify-content:space-around;align-items:center;min-height:80px;padding-bottom:max(env(safe-area-inset-bottom),16px);background:var(--surface);font-size:14px;color:var(--muted)}
-.bottom button{text-align:center}
-.bottom button.on{color:var(--fg)}
-.bottom i{display:block;width:56px;height:30px;border-radius:15px;margin:0 auto 4px;border:2px solid var(--hair)}
-.bottom .on i{background:var(--chip)}
+.bottom{position:sticky;bottom:0;display:flex;align-items:stretch;padding:6px 8px max(env(safe-area-inset-bottom),8px);background:var(--surface);border-top:1px solid var(--hair);font-size:12px;color:var(--muted)}
+.bottom button{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;min-height:49px;padding:4px 0 0;text-align:center}
+.bottom .ico{display:grid;place-items:center;width:56px;height:30px;border-radius:15px;transition:background-color .2s}
+.bottom .f{fill:none}
+.bottom button.on{font-weight:600}
+.bottom button.on .f{fill:currentColor}
 .pull{display:grid;place-items:end center;color:var(--muted);font-size:14px;overflow:hidden}
 .mock-banner{background:var(--warn-bg);color:var(--warn-fg);padding:4px 14px;font-size:14px;text-align:center}
 
@@ -147,12 +148,13 @@ input[type=range]{accent-color:var(--run)}
 .sec{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:10px 18px 6px;flex-wrap:wrap}
 .sec b{font-size:var(--fs-name,17px);font-weight:600}
 .sec span{color:var(--muted);font-size:14px}
-.idles{display:flex;flex-wrap:wrap;gap:4px 14px;padding:10px 18px 4px;font-size:var(--fs,15px)}
-/* 閒置＝在線、沒在做事：標上「閒置 N」，名稱用正常字色、點用空心圈，和離線（灰字灰點，收在底部）分得開 */
-.idle-label{color:var(--muted);font-size:14px;align-self:center}
-.idle{display:inline-flex;align-items:center;gap:7px;color:var(--fg);overflow-wrap:anywhere;padding:2px 0}
-.idle .dot.idle{background:transparent;box-shadow:inset 0 0 0 1.5px var(--muted)}
-.idle:hover{text-decoration:underline}
+.sub{padding:8px 18px 4px;color:var(--muted);font-size:13px;font-weight:600}
+/* 閒置＝在線、沒在做事：和忙碌的泳道同一種卡片，點用實心綠點（在線），和離線（灰點，收在底部）分得開；名稱多欄排開，不用橫排一行 */
+.idle-list{margin-top:0;padding:4px;display:grid;grid-template-columns:repeat(auto-fill,minmax(11rem,1fr))}
+.idle-list>.idle-row{border-top:0}
+.idle-row{display:flex;align-items:center;gap:10px;min-width:0;padding:9px 10px;border-radius:8px;font-size:var(--fs,15px);color:var(--fg)}
+.idle-row .nm{font-weight:500}
+.idle-row:hover{background:var(--chip)}
 .pool{margin:0 16px 10px;padding:10px 14px;border-radius:var(--radius-card,10px);background:var(--surface-a,var(--surface))}
 .ph{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
 .pn{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0;overflow-wrap:anywhere;font-size:var(--fs-name,17px)}
