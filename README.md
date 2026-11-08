@@ -140,6 +140,8 @@ PR_RUNNERS_GITHUB_APP_SLUG = "pr-runners-dev"
 
 建完後可以用 `strings -a <封存檔>/Products/Applications/pr-runners.app/pr-runners | grep -c <client ID>` 確認有編進去（要大於 0）再上傳。
 
+**打完 TestFlight 包之後，`git status` 會看到 `app/src-tauri/gen/apple/pr-runners-app_iOS/Info.plist` 被改了**：`--config` 帶的 build 編號會被寫進它的 `CFBundleVersion`。那是打包的副產物，每次都會重新產生，**不要 commit**；打完用 `git checkout -- app/src-tauri/gen/apple/pr-runners-app_iOS/Info.plist` 還原。
+
 iOS 版與 Android 版的差別與限制：
 
 - 沒有選單列／系統匣與小視窗；介面與 Android 共用一欄版面（底部導覽、下拉重新整理），樣式用 iOS 系統色與系統字型（`app/src/styles/ios.css`）。
