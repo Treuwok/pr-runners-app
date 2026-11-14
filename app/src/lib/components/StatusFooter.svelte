@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snapshot } from "$lib/generated/Snapshot";
+  import { UPDATING_NOTE } from "$lib/loading";
   import { SKEW_NOTE, accountNote, formatClock, hasSkew } from "$lib/view";
 
   let { snapshot, onrelogin }: { snapshot: Snapshot; onrelogin: () => void } = $props();
@@ -22,6 +23,10 @@
       </p>
     {/if}
   {/each}
-  {#if lastUpdated > 0}<p class="updated">最後更新 {formatClock(lastUpdated)}</p>{/if}
+  {#if snapshot.updating}
+    <p class="updated" role="status">{UPDATING_NOTE}</p>
+  {:else if lastUpdated > 0}
+    <p class="updated">最後更新 {formatClock(lastUpdated)}</p>
+  {/if}
   {#if hasSkew(snapshot)}<p class="skew">{SKEW_NOTE}</p>{/if}
 </footer>

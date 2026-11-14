@@ -7,8 +7,10 @@ pub mod client;
 pub mod collector;
 pub mod history;
 pub mod persist;
+pub mod pr_tag;
 pub mod runlog;
 pub mod secrets;
+mod transport;
 pub mod view;
 
 pub use client::now_secs;

@@ -96,15 +96,23 @@ impl JobHistory {
 
     /// 為這一輪正在跑的 workflow 補齊歷史。查詢失敗不影響畫面：那個 workflow 這輪就沒有預估。
     pub async fn refresh(&mut self, c: &GitHubClient, wanted: &BTreeSet<WorkflowKey>, now: i64) {
-        // 1) 執行清單：沒查過或過期才查
-        for key in wanted {
-            let stale = self
-                .workflows
-                .get(key)
-                .is_none_or(|w| now - w.checked_at >= REFRESH_SECS);
-            if stale
-                && let Ok(ids) = api::successful_run_ids(c, &key.0, key.1, RUNS_PER_WORKFLOW).await
-            {
+        // 1) 執行清單：沒查過或過期才查；各 workflow 互不相依，一起送出（同時在途的請求數由 client 限制）
+        let stale: Vec<&WorkflowKey> = wanted
+            .iter()
+            .filter(|key| {
+                self.workflows
+                    .get(*key)
+                    .is_none_or(|w| now - w.checked_at >= REFRESH_SECS)
+            })
+            .collect();
+        let listed = join_all(
+            stale
+                .iter()
+                .map(|key| api::successful_run_ids(c, &key.0, key.1, RUNS_PER_WORKFLOW)),
+        )
+        .await;
+        for (key, res) in stale.into_iter().zip(listed) {
+            if let Ok(ids) = res {
                 self.workflows.insert(
                     key.clone(),
                     WorkflowRuns {
@@ -114,6 +122,8 @@ impl JobHistory {
                     },
                 );
             }
+        }
+        for key in wanted {
             if let Some(w) = self.workflows.get_mut(key) {
                 w.used_at = now;
             }

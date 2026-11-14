@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import dev from "./dev-snapshot.json";
+import { isLoading } from "./loading";
 import type { AccountView } from "./generated/AccountView";
 import type { JobView } from "./generated/JobView";
 import type { RunnerView } from "./generated/RunnerView";
@@ -286,8 +287,22 @@ function snapshotWith(r: RunnerView[], waitingAge: "Untrusted" | { Known: { secs
     generated_at: NOW,
     accounts: [acct],
     summary: { own_busy: 0, own_online: 0, own_offline: 0, pool_busy: 0, waiting: 0, attention: "Ok", stale: false },
+    updating: false,
   };
 }
+
+describe("isLoading", () => {
+  const base = snapshotWith([]);
+  it("還沒有範圍可顯示、而且資料還在路上：讀取中", () => {
+    expect(isLoading({ ...base, accounts: [{ ...base.accounts[0], status: "Loading", scopes: [] }] }, 0)).toBe(true);
+    // 剛勾選新範圍（帳號已是 Ok、還沒有範圍）：等要求的掃描跑完
+    expect(isLoading({ ...base, updating: true }, 0)).toBe(true);
+  });
+  it("已經有範圍可顯示、或沒有任何掃描在路上：不是讀取中", () => {
+    expect(isLoading({ ...base, updating: true }, 1)).toBe(false);
+    expect(isLoading(base, 0)).toBe(false);
+  });
+});
 
 describe("hasSkew", () => {
   it("runner 或等待中任一為 Untrusted 就成立", () => {
@@ -361,6 +376,8 @@ describe("dotFor / repoName / accountNote", () => {
     expect(formatClock(reset)).toBe("07:05");
     expect(accountNote({ Throttled: { remaining: 120, reset_at: reset } })).toBe("已放慢更新（剩 120 次／重置於 07:05）");
     expect(accountNote({ Offline: { last_ok_at: reset } })).toBe("最後更新 07:05");
+    expect(accountNote("Loading")).toBe("讀取中…");
+    expect(accountNote({ Offline: { last_ok_at: 0 } })).toBe("連不上 GitHub，稍後會再試");
   });
 });
 

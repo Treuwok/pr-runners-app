@@ -1,6 +1,6 @@
 //! 前端可呼叫的 commands。邏輯盡量放在不依賴 `AppHandle` 的純函式，方便單元測試。
 
-use crate::state::{Op, Shared, reconcile};
+use crate::state::{Op, Shared};
 use pr_runners_core::api::{self, ScopeKind};
 use pr_runners_core::auth::{DeviceCode, DeviceFlow, PollOutcome, TokenSet};
 use pr_runners_core::persist::{
@@ -13,7 +13,7 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tauri::{Emitter, State};
+use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 use ts_rs::TS;
 
@@ -135,21 +135,18 @@ fn mirror(state: &Shared) -> Vec<AccountMeta> {
     state.accounts.lock().expect("accounts").clone()
 }
 
+/// 存檔的那份可能早於後來的帳號或勾選變動：回給前端的一律先對齊現在的帳號清單（見 `Shared::view`）。
 #[tauri::command]
-pub fn get_snapshot(state: AppState<'_>) -> Option<Snapshot> {
-    let mut snap = match state.latest.lock().expect("latest").clone() {
-        Some(s) => s,
-        None => persist::load_snapshot(&state.data_dir)?,
-    };
-    // 存檔的那份可能早於後來的帳號或勾選變動：回給前端前先對齊現在的清單
-    reconcile(&mut snap, &mirror(&state));
-    Some(snap)
+pub fn get_snapshot(state: AppState<'_>) -> Snapshot {
+    state.view()
 }
 
+/// 立刻要求一次完整掃描；畫面馬上顯示「更新中」，直到那一輪跑完。
 #[tauri::command]
-pub fn refresh_now(state: AppState<'_>) {
+pub fn refresh_now(state: AppState<'_>, app: tauri::AppHandle) {
     state.force_full.store(true, Ordering::SeqCst);
     state.wake.notify_one();
+    state.republish(&app);
 }
 
 #[tauri::command]
@@ -162,7 +159,11 @@ pub async fn login_start(state: AppState<'_>) -> Result<DeviceCode, String> {
 }
 
 #[tauri::command]
-pub async fn login_poll(device_code: String, state: AppState<'_>) -> Result<LoginStatus, String> {
+pub async fn login_poll(
+    device_code: String,
+    state: AppState<'_>,
+    app: tauri::AppHandle,
+) -> Result<LoginStatus, String> {
     let flow = match require_flow(state.flow.as_ref()) {
         Ok(flow) => flow,
         Err(status) => return Ok(status),
@@ -191,7 +192,7 @@ pub async fn login_poll(device_code: String, state: AppState<'_>) -> Result<Logi
     let added = match &outcome {
         PollOutcome::Done(token) => {
             *state.pending_token.lock().expect("pending") = Some(token.clone());
-            let added = finish_login(&state, token.clone(), AccountKind::GitHubApp).await?;
+            let added = finish_login(&state, &app, token.clone(), AccountKind::GitHubApp).await?;
             // 帳號、token、收集器都已建立才清掉
             *state.pending_token.lock().expect("pending") = None;
             *state.pending_login.lock().expect("pending") = None;
@@ -203,8 +204,10 @@ pub async fn login_poll(device_code: String, state: AppState<'_>) -> Result<Logi
 }
 
 /// 取得帳號身分、預設全選可看的 scope、存 token、加進帳號清單並交給輪詢。
+/// 第一輪掃描要十幾秒：先把帳號以「讀取中」推給畫面，不讓它在這段時間看起來像沒有帳號。
 async fn finish_login(
     state: &Shared,
+    app: &tauri::AppHandle,
     token: TokenSet,
     kind: AccountKind,
 ) -> Result<AddedAccount, String> {
@@ -218,17 +221,26 @@ async fn finish_login(
         selected_scopes: found.into_iter().map(|(n, _)| n).collect(),
     };
     state.secret_store().put(account_id, &token).map_err(err)?;
+    // 先寫進磁碟再改記憶體：寫不進去就整個取消，記憶體裡不留一個收集器不知道的帳號
     {
         let mut accounts = state.accounts.lock().expect("accounts");
-        accounts.retain(|a| a.account_id != account_id);
-        accounts.push(meta.clone());
-        persist::save_accounts(&state.data_dir, &accounts).map_err(err)?;
+        let mut next: Vec<AccountMeta> = accounts
+            .iter()
+            .filter(|a| a.account_id != account_id)
+            .cloned()
+            .collect();
+        next.push(meta.clone());
+        persist::save_accounts(&state.data_dir, &next).map_err(err)?;
+        *accounts = next;
     }
+    // 先標「要完整掃描」再喚醒輪詢：反過來的話，輪詢可能先醒來、看到 false 跑一般輪詢，之後沒人再叫醒它
+    state.force_full.store(true, Ordering::SeqCst);
     state.push_op(Op::AddAccount {
         meta,
         client: Box::new(client),
     });
-    state.force_full.store(true, Ordering::SeqCst);
+    // 重新登入時，舊的掃描結果（例如「重新登入」）不再代表這個帳號
+    state.republish_restarted(app, account_id);
     Ok(AddedAccount { account_id, login })
 }
 
@@ -275,20 +287,27 @@ pub fn set_scopes(
     account_id: u64,
     selected: Vec<String>,
     state: AppState<'_>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     let selected: BTreeSet<String> = selected.into_iter().collect();
+    // 先寫進磁碟再改記憶體：寫不進去就整個取消，記憶體與收集器維持原本的勾選
     {
         let mut accounts = state.accounts.lock().expect("accounts");
-        if let Some(a) = accounts.iter_mut().find(|a| a.account_id == account_id) {
+        let mut next = accounts.clone();
+        if let Some(a) = next.iter_mut().find(|a| a.account_id == account_id) {
             a.selected_scopes = selected.clone();
         }
-        persist::save_accounts(&state.data_dir, &accounts).map_err(err)?;
+        persist::save_accounts(&state.data_dir, &next).map_err(err)?;
+        *accounts = next;
     }
+    // 先標「要完整掃描」再喚醒輪詢（理由見 finish_login）
+    state.force_full.store(true, Ordering::SeqCst);
     state.push_op(Op::SetScopes {
         account_id,
         selected,
     });
-    state.force_full.store(true, Ordering::SeqCst);
+    // 取消勾選的範圍立刻從畫面拿掉；新勾的等下一輪掃完才有內容（期間畫面顯示「更新中」）
+    state.republish(&app);
     Ok(())
 }
 
@@ -316,15 +335,8 @@ pub async fn remove_account(
     }
     state.push_op(Op::RemoveAccount { account_id });
 
-    // 修剪目前顯示的 snapshot 並推事件：與輪詢的發布共用 `latest` 鎖，最後送出的一定是最新的那份
-    {
-        let mut latest = state.latest.lock().expect("latest");
-        if let Some(snap) = latest.as_mut() {
-            reconcile(snap, &mirror(&state));
-            let _ = persist::save_snapshot(&state.data_dir, snap);
-            let _ = app.emit("snapshot", &*snap);
-        }
-    }
+    // 修剪目前顯示的 snapshot 並推事件（與輪詢共用同一條發布路徑，最後送出的一定是最新的那份）
+    state.republish(&app);
     // 最後才刪金鑰庫：就算暫時刪不掉，帳號也已經不會再被輪詢，輪詢套用移除時會再刪一次
     state
         .secret_store()
@@ -361,13 +373,18 @@ pub fn install_url() -> String {
 
 /// 備用方案：貼上 fine-grained PAT。
 #[tauri::command]
-pub async fn add_pat(token: String, state: AppState<'_>) -> Result<AddedAccount, String> {
+pub async fn add_pat(
+    token: String,
+    state: AppState<'_>,
+    app: tauri::AppHandle,
+) -> Result<AddedAccount, String> {
     let token = token.trim().to_string();
     if token.is_empty() {
         return Err("請貼上 token".into());
     }
     finish_login(
         &state,
+        &app,
         TokenSet {
             access_token: token,
             expires_at: None,
@@ -391,11 +408,13 @@ pub fn open_url(url: String, app: tauri::AppHandle) -> Result<(), String> {
 
 /// Android：回到前景 → 解除暫停，下一輪用 Full 且視為第一次看到。Mac 不呼叫。
 #[tauri::command]
-pub fn app_resumed(state: AppState<'_>) {
+pub fn app_resumed(state: AppState<'_>, app: tauri::AppHandle) {
     state.halt.store(false, Ordering::SeqCst);
     state.resume_pending.store(true, Ordering::SeqCst);
     state.force_full.store(true, Ordering::SeqCst);
     state.wake.notify_one();
+    // 畫面上是背景前的舊資料：馬上顯示「更新中」
+    state.republish(&app);
 }
 
 /// Android：切到背景 → 不再開始新的一輪，進行中的掃描在下一個請求處中止。Mac 不呼叫。

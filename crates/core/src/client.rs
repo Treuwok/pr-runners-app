@@ -9,9 +9,10 @@ use serde::de::DeserializeOwned;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
+
+use crate::transport::{self, Transport};
 
 /// 一小時的計費請求窗。
 const WINDOW_SECS: i64 = 3_600;
@@ -116,7 +117,7 @@ impl EtagCache {
 }
 
 pub struct GitHubClient {
-    http: reqwest::Client,
+    transport: Transport,
     /// 設了就不再發任何請求（Android 切到背景）：進行中的掃描會在下一個請求處中止。
     halt: Option<Arc<AtomicBool>>,
     base: Url,
@@ -146,16 +147,8 @@ impl GitHubClient {
             let p = format!("{}/", api_base.path());
             api_base.set_path(&p);
         }
-        let http = reqwest::Client::builder()
-            // GitHub 拒收沒有 User-Agent 的請求，reqwest 預設不帶
-            .user_agent(concat!("pr-runners/", env!("CARGO_PKG_VERSION")))
-            // 沒有逾時的話，一條卡住的連線會讓整輪掃描（與持有收集器的人）永遠卡住
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
-            .build()
-            .expect("reqwest client");
         Self {
-            http,
+            transport: Transport::new(),
             halt: None,
             base: api_base,
             token: RwLock::new(token),
@@ -236,23 +229,9 @@ impl GitHubClient {
             .map_err(|e| ApiError::Decode(format!("網址不合法：{e}")))
     }
 
-    async fn fetch(&self, url: &Url) -> Result<Page, ApiError> {
-        if self.halt.as_ref().is_some_and(|h| h.load(Ordering::SeqCst)) {
-            return Err(ApiError::Network("已暫停（App 在背景）".into()));
-        }
-        let now = now_secs();
-        {
-            let m = self.meter.lock().expect("meter lock");
-            if m.blocked_until > now {
-                return Err(ApiError::RateLimited {
-                    reset_at: m.blocked_until,
-                });
-            }
-        }
-
+    fn request(&self, http: &reqwest::Client, url: &Url) -> reqwest::RequestBuilder {
         let token = self.token.read().expect("token lock").clone();
-        let mut req = self
-            .http
+        let req = http
             .get(url.clone())
             .bearer_auth(token)
             .header("Accept", "application/vnd.github+json")
@@ -264,14 +243,45 @@ impl GitHubClient {
             .entries
             .get(url)
             .map(|e| e.etag.clone());
-        if let Some(etag) = &cached_etag {
-            req = req.header("If-None-Match", etag);
+        match cached_etag {
+            Some(etag) => req.header("If-None-Match", etag),
+            None => req,
         }
+    }
 
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+    /// 每一次送出前都要成立的條件：沒有被暫停（App 在背景）、沒有被限流。
+    fn may_send(&self) -> Result<(), ApiError> {
+        if self.halt.as_ref().is_some_and(|h| h.load(Ordering::SeqCst)) {
+            return Err(ApiError::Network("已暫停（App 在背景）".into()));
+        }
+        let m = self.meter.lock().expect("meter lock");
+        if m.blocked_until > now_secs() {
+            return Err(ApiError::RateLimited {
+                reset_at: m.blocked_until,
+            });
+        }
+        Ok(())
+    }
+
+    /// 丟掉所有閒置連線（App 回到前景時呼叫：裝置睡眠期間閒置時間不累計，過期的連線看起來還很新）。
+    pub fn reset_connections(&self) {
+        self.transport.reset();
+    }
+
+    async fn fetch(&self, url: &Url) -> Result<Page, ApiError> {
+        // 先拿到在途名額再檢查：排隊期間 App 可能已切到背景、或別的請求剛被限流
+        let _slot = self.transport.slot().await;
+        self.may_send()?;
+        let resp = match self.transport.send(|http| self.request(http, url)).await {
+            // 重用的連線其實已經斷了：同一池的其他閒置連線多半也一樣，整池換新後重送一次
+            Err(e) if transport::reused_connection_closed(&e) => {
+                self.transport.reset();
+                self.may_send()?;
+                self.transport.send(|http| self.request(http, url)).await
+            }
+            other => other,
+        }
+        .map_err(|e| ApiError::Network(e.to_string()))?;
         let status = resp.status();
         let headers = resp.headers().clone();
         let body = resp

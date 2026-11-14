@@ -9,6 +9,7 @@
   import Login from "./Login.svelte";
   import RunnersView from "./RunnersView.svelte";
   import Settings from "./Settings.svelte";
+  import { UPDATING_NOTE } from "$lib/loading";
 
   type Tab = "runners" | "jobs" | "settings";
   let tab = $state<Tab>("runners");
@@ -78,7 +79,7 @@
 
   const snap = $derived(store.snapshot);
   const scopeNames = $derived([...new Set((snap?.accounts ?? []).flatMap((a) => a.scopes.map((s) => s.name)))]);
-  const needLogin = $derived(store.loaded && (!snap || snap.accounts.length === 0));
+  const needLogin = $derived(snap !== null && snap.accounts.length === 0);
   $effect(() => {
     if (needLogin) onboarding = true;
   });
@@ -111,7 +112,7 @@
 
 <div class="app {platform}">
   {#if isMock()}<p class="mock-banner" role="status">示意資料（mock）— 不是真實的 runner 狀態</p>{/if}
-  {#if !store.loaded}
+  {#if !snap}
     <div class="skeleton" aria-busy="true" aria-label="載入中">
       {#each [0, 1, 2, 3] as i (i)}<div class="sk-row"></div>{/each}
     </div>
@@ -123,7 +124,6 @@
         onboarding = false;
         adding = false;
         reauth = false;
-        void refreshNow();
       }}
     />
   {:else if snap}
@@ -164,6 +164,9 @@
         <div class="pull" style:height="{pull / 2}px" aria-hidden="true">
           {pull >= PULL_THRESHOLD ? "放開重新整理" : "下拉重新整理"}
         </div>
+      {:else if snap.updating && isMobile(platform)}
+        <!-- 放開之後（或剛回到前景）一輪掃描還要好幾秒：留著提示，直到那一輪跑完 -->
+        <div class="pull" style:height="{PULL_THRESHOLD / 2}px" aria-hidden="true">{UPDATING_NOTE}</div>
       {/if}
       {#if tab === "runners"}
         {#if historyKey}

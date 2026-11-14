@@ -346,3 +346,30 @@ async fn halted_client_sends_no_requests_and_resumes_when_cleared() {
     halt.store(false, Ordering::SeqCst);
     assert!(c.get_json::<Item>("/x").await.is_ok());
 }
+
+/// 實機上約每 8 輪就有 1 輪整輪失敗：重用的閒置連線已被對方關掉，請求一送出就斷
+/// （`hyper::Error(IncompleteMessage)`）。這種失敗要換一條連線重送一次，不能讓整輪變成「離線」。
+#[tokio::test]
+async fn resends_once_when_the_connection_closes_before_any_response() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        // 第一條連線：讀完請求就關掉，什麼都不回
+        let (mut first, _) = listener.accept().await.unwrap();
+        let _ = first.read(&mut [0u8; 4096]).await;
+        drop(first);
+        // 第二條連線：正常回應
+        let (mut second, _) = listener.accept().await.unwrap();
+        let _ = second.read(&mut [0u8; 4096]).await;
+        let body = r#"{"n":7}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        second.write_all(resp.as_bytes()).await.unwrap();
+    });
+    let c = GitHubClient::new(Url::parse(&format!("http://{addr}")).unwrap(), "tok".into());
+    let got: Item = c.get_json("/thing").await.expect("換一條連線重送後要成功");
+    assert_eq!(got, Item { n: 7 });
+}

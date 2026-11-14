@@ -7,15 +7,16 @@
 
 use pr_runners_core::auth::{DeviceCode, DeviceFlow, TokenSet};
 use pr_runners_core::persist::AccountMeta;
-use pr_runners_core::persist::save_runlog;
+use pr_runners_core::persist::{load_snapshot, save_runlog, save_snapshot};
 use pr_runners_core::runlog::{BackfillReport, RunLog};
 use pr_runners_core::secrets::{KeyringStore, RetryingStore, SecretStore};
-use pr_runners_core::view::Snapshot;
-use pr_runners_core::{Collector, GitHubClient};
+use pr_runners_core::view::{AccountView, Snapshot};
+use pr_runners_core::{Collector, GitHubClient, now_secs};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter};
 use tokio::sync::Notify;
 use url::Url;
 
@@ -71,7 +72,10 @@ pub struct Shared {
     pub wake: Notify,
     /// Android 在背景：迴圈不開始新的一輪；所有 HTTP client 共用這個旗標，進行中的掃描也會在下一個請求處中止。
     pub halt: Arc<AtomicBool>,
+    /// 有人要求一次完整掃描（登入、改勾選、下拉、回到前景），下一輪還沒開始
     pub force_full: AtomicBool,
+    /// 正在跑的這一輪是在回應某個要求（含 App 啟動後的第一輪：畫面上是上次存的舊資料）
+    pub serving_request: AtomicBool,
     /// 回到前景：下一輪每個 scope 都視為「第一次看到」
     pub resume_pending: AtomicBool,
 }
@@ -93,16 +97,25 @@ pub fn publish_runlog_copy(
     }
 }
 
-/// 讓一份剛掃完的 snapshot 符合「現在的帳號清單」：已移除的帳號與已取消勾選的 scope 都拿掉。
-/// 掃描進行中使用者可能剛好移除帳號或改勾選；沒有這一步，那一輪會把剛消失的東西又推給畫面與存檔。
+/// 讓一份 snapshot 符合「現在的帳號清單」（帳號有哪些的唯一來源）：帳號依清單的順序排列，
+/// 已移除的帳號與已取消勾選的 scope 拿掉，清單裡有、snapshot 還沒有的帳號補上 `Loading`。
+/// 掃描一輪可能要十幾秒，期間使用者可能剛登入、移除帳號或改勾選；沒有這一步，畫面會把「還沒掃到」
+/// 當成「沒有帳號」（跳回登入頁），或把剛消失的東西又推給畫面與存檔。
 pub fn reconcile(snap: &mut Snapshot, accounts: &[AccountMeta]) {
-    snap.accounts
-        .retain(|a| accounts.iter().any(|m| m.account_id == a.account_id));
-    for a in &mut snap.accounts {
-        if let Some(m) = accounts.iter().find(|m| m.account_id == a.account_id) {
-            a.scopes.retain(|s| m.selected_scopes.contains(&s.name));
-        }
-    }
+    let mut scanned = std::mem::take(&mut snap.accounts);
+    snap.accounts = accounts
+        .iter()
+        .map(
+            |m| match scanned.iter().position(|a| a.account_id == m.account_id) {
+                Some(i) => {
+                    let mut a = scanned.swap_remove(i);
+                    a.scopes.retain(|s| m.selected_scopes.contains(&s.name));
+                    a
+                }
+                None => AccountView::loading(m.account_id, m.login.clone()),
+            },
+        )
+        .collect();
     snap.summary = pr_runners_core::assemble::summarize(&snap.accounts);
 }
 
@@ -118,6 +131,61 @@ impl Shared {
     pub fn push_op(&self, op: Op) {
         self.ops.lock().expect("ops").push(op);
         self.wake.notify_one();
+    }
+
+    /// 畫面現在該看到的那一份：最新一輪（還沒有就用上次存檔，再沒有就是空的）對齊目前的帳號清單。
+    pub fn view(&self) -> Snapshot {
+        let latest = self.latest.lock().expect("latest");
+        self.aligned(latest.clone())
+    }
+
+    /// 發布剛掃完的一輪（輪詢迴圈用）：存檔，再交給畫面與選單列。
+    pub fn publish_scan(&self, app: &AppHandle, scanned: Snapshot) {
+        let mut latest = self.latest.lock().expect("latest");
+        let snap = self.aligned(Some(scanned));
+        // 存檔失敗不該擋住畫面更新；下一輪會再存
+        let _ = save_snapshot(&self.data_dir, &snap);
+        Self::show(&mut latest, app, snap);
+    }
+
+    /// 帳號清單變了、或剛要求了一次掃描（登入、改勾選、移除、下拉、回到前景）：不必等下一輪掃完，
+    /// 把目前這份重新對齊（含「更新中」）再交給畫面與選單列。不存檔：讀取時一律會再對齊帳號清單。
+    pub fn republish(&self, app: &AppHandle) {
+        let mut latest = self.latest.lock().expect("latest");
+        let snap = self.aligned(latest.clone());
+        Self::show(&mut latest, app, snap);
+    }
+
+    /// 帳號重新登入（同一個 id 換了新的 token）：舊的掃描結果（例如「重新登入」）不再代表它，
+    /// 改顯示成還沒掃過的「讀取中」，等下一輪。
+    pub fn republish_restarted(&self, app: &AppHandle, account_id: u64) {
+        let mut latest = self.latest.lock().expect("latest");
+        let mut current = latest.clone();
+        if let Some(s) = current.as_mut() {
+            s.accounts.retain(|a| a.account_id != account_id);
+        }
+        let snap = self.aligned(current);
+        Self::show(&mut latest, app, snap);
+    }
+
+    /// 所有發布最後都走這裡（在 `latest` 鎖裡）：記住 → 推給所有視窗 → 更新選單列。
+    /// 同一把鎖讓最後被畫面收到的一定是用最新帳號清單對齊過的那份，不會有舊的那份蓋回去。
+    fn show(latest: &mut Option<Snapshot>, app: &AppHandle, snap: Snapshot) {
+        let _ = app.emit("snapshot", &snap);
+        #[cfg(desktop)]
+        crate::tray::update(app, &snap.summary);
+        *latest = Some(snap);
+    }
+
+    fn aligned(&self, base: Option<Snapshot>) -> Snapshot {
+        let mut snap = base
+            .or_else(|| load_snapshot(&self.data_dir))
+            .unwrap_or_else(|| Snapshot::new(now_secs(), Vec::new()));
+        reconcile(&mut snap, &self.accounts.lock().expect("accounts"));
+        // 已要求、但還沒跑完的掃描：還沒開始的（force_full）或正在跑的那一輪
+        snap.updating =
+            self.force_full.load(Ordering::SeqCst) || self.serving_request.load(Ordering::SeqCst);
+        snap
     }
 }
 
@@ -221,6 +289,7 @@ mod tests {
                 attention: Severity::Warn,
                 stale: true,
             },
+            updating: false,
         }
     }
 
@@ -237,6 +306,19 @@ mod tests {
         assert_eq!(names, ["A"], "B 已取消勾選");
         assert_eq!(s.summary.own_busy, 0, "計數要依剩下的內容重算");
         assert_eq!(s.summary.attention, Severity::Ok);
+    }
+
+    /// 登入後第一輪還沒掃完、或重開時讀到的是登入前存的那份：帳號不能消失（畫面會以為沒登入）。
+    #[test]
+    fn reconcile_adds_accounts_that_have_not_been_scanned_yet_as_loading() {
+        let mut s = snap(vec![account(2, &["C"])]);
+        reconcile(&mut s, &[meta(1, &["A"]), meta(2, &["C"])]);
+        let ids: Vec<_> = s.accounts.iter().map(|a| a.account_id).collect();
+        assert_eq!(ids, [1, 2], "依帳號清單的順序");
+        assert_eq!(s.accounts[0].status, AccountStatus::Loading);
+        assert_eq!(s.accounts[0].login, "u1");
+        assert!(s.accounts[0].scopes.is_empty());
+        assert_eq!(s.accounts[1].status, AccountStatus::Ok, "已掃過的照舊");
     }
 
     #[test]
