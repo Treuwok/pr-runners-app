@@ -362,6 +362,7 @@ mod tests {
                 attention: crate::view::Severity::Warn,
                 stale: false,
             },
+            updating: false,
         };
         save_snapshot(dir.path(), &snap).unwrap();
         assert_eq!(load_snapshot(dir.path()), Some(snap.clone()));

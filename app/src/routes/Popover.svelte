@@ -30,11 +30,11 @@
 
 <div class="popover">
 <div bind:this={inner}>
-  {#if !store.loaded}
+  {#if !snap}
     <div class="skeleton" aria-busy="true" aria-label="載入中">
       {#each [0, 1, 2] as i (i)}<div class="sk-row"></div>{/each}
     </div>
-  {:else if !snap || snap.accounts.length === 0}
+  {:else if snap.accounts.length === 0}
     <p class="empty">還沒有登入。</p>
   {:else}
     <RunnersView

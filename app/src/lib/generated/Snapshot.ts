@@ -2,4 +2,9 @@
 import type { AccountView } from "./AccountView";
 import type { Summary } from "./Summary";
 
-export type Snapshot = { schema_version: number, generated_at: number, accounts: Array<AccountView>, summary: Summary, };
+export type Snapshot = { schema_version: number, generated_at: number, accounts: Array<AccountView>, summary: Summary, 
+/**
+ * 有一次要求的掃描還沒完成（剛啟動、登入、改勾選、下拉重新整理、回到前景）：
+ * 畫面上的資料可能不是最新的。由發布的那一刻依輪詢狀態填入，不是掃描結果的一部分。
+ */
+updating: boolean, };

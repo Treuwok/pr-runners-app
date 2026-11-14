@@ -121,10 +121,8 @@ impl DeviceFlow {
     }
 
     pub fn with_clock(web_base: Url, client_id: impl Into<String>, now: fn() -> i64) -> Self {
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("pr-runners/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .expect("reqwest client");
+        // 與 API 請求同一組連線設定：沒有逾時的話，一次卡住的續期會讓輪詢與移除帳號（同一把生命週期鎖）永遠等下去
+        let http = crate::transport::http_client();
         Self {
             web_base,
             client_id: client_id.into(),

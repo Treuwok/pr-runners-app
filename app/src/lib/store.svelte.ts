@@ -7,9 +7,8 @@ import type { Snapshot } from "./generated/Snapshot";
 import { type Platform, detectPlatform, isDesktop, isMobile } from "./view";
 
 class Store {
+  /** null＝還沒拿到第一份（顯示骨架畫面）；Rust 端一律回一份，所以拿到之後就不會再是 null */
   snapshot = $state<Snapshot | null>(null);
-  /** 第一次載入完成（有或沒有 snapshot）前顯示骨架畫面 */
-  loaded = $state(false);
 
   /** Rust 端推來的事件一律接受：`generated_at` 是本機時鐘，時鐘被調回去時不能因此把畫面凍住。 */
   acceptEvent(next: Snapshot) {
@@ -17,8 +16,8 @@ class Store {
   }
 
   /** `get_snapshot` 的回應只在還沒收過任何事件時採用（事件一定比它新）。 */
-  acceptInitial(next: Snapshot | null) {
-    if (next && !this.snapshot) this.snapshot = next;
+  acceptInitial(next: Snapshot) {
+    if (!this.snapshot) this.snapshot = next;
   }
 }
 
@@ -33,17 +32,14 @@ export async function startStore(): Promise<() => void> {
   if (isMock()) {
     const mod = await import("./dev-snapshot.json");
     store.acceptEvent(mod.default as unknown as Snapshot);
-    store.loaded = true;
     return () => {};
   }
   // 先註冊 listener 再讀目前的 snapshot，兩者之間發生的事件不會漏掉
   const unlisten = await listen<Snapshot>("snapshot", (e) => {
     store.acceptEvent(e.payload);
-    store.loaded = true;
   });
-  store.acceptInitial(await invoke<Snapshot | null>("get_snapshot"));
-  // 還沒有任何 snapshot 時，等第一個事件；先讓畫面離開骨架狀態不合理，所以只在拿到資料後才標 loaded
-  if (store.snapshot) store.loaded = true;
+  // Rust 端一律回一份已對齊帳號清單的 snapshot（還沒掃完的帳號是 Loading），拿到就能離開骨架畫面
+  store.acceptInitial(await invoke<Snapshot>("get_snapshot"));
   return unlisten;
 }
 
@@ -58,6 +54,7 @@ export async function openUrl(url: string): Promise<string | null> {
   }
 }
 
+/** 要求立刻完整掃描一次；「更新中」由 Rust 端在 snapshot 的 `updating` 告訴畫面。 */
 export async function refreshNow(): Promise<void> {
   if (!isMock()) await invoke("refresh_now");
 }

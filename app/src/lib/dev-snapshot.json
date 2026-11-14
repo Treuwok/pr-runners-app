@@ -475,5 +475,6 @@
     "waiting": 2,
     "attention": "Warn",
     "stale": false
-  }
+  },
+  "updating": false
 }

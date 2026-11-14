@@ -122,6 +122,8 @@ pub fn run() {
                 pending_token: Mutex::new(None),
                 halt,
                 force_full: AtomicBool::new(false),
+                // 啟動後的第一輪就是在更新畫面上的舊資料
+                serving_request: AtomicBool::new(true),
                 resume_pending: AtomicBool::new(false),
             });
             app.manage(shared.clone());

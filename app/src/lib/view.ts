@@ -313,10 +313,13 @@ export function formatClock(unixSecs: number): string {
 /** 帳號狀態在畫面底部（StatusFooter）的文字；`null`＝正常，只顯示「最後更新」。 */
 export function accountNote(status: AccountStatus): string | null {
   if (status === "Ok") return null;
+  if (status === "Loading") return "讀取中…";
   if (status === "NeedsReauth") return "重新登入";
   if ("Throttled" in status) {
     return `已放慢更新（剩 ${status.Throttled.remaining} 次／重置於 ${formatClock(status.Throttled.reset_at)}）`;
   }
+  // 從來沒有成功過（last_ok_at = 0）：沒有「最後更新」的時間可以顯示
+  if (status.Offline.last_ok_at === 0) return "連不上 GitHub，稍後會再試";
   return `最後更新 ${formatClock(status.Offline.last_ok_at)}`;
 }
 

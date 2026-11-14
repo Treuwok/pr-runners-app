@@ -4,10 +4,10 @@
 //! 時間在這裡由 ISO 8601 轉成 Unix 秒 `i64`，之後 crate 之間只傳整數。
 
 use crate::client::{ApiError, GitHubClient};
+use futures_util::future::join_all;
 use pr_runners_rules::{GroupAccess, JobFacts, JobState};
 use serde::Deserialize;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::Mutex;
+use std::collections::{BTreeMap, BTreeSet};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 #[derive(
@@ -212,12 +212,6 @@ fn one() -> u32 {
     1
 }
 
-#[derive(Deserialize)]
-struct RawPull {
-    number: u64,
-    state: String,
-}
-
 // ───────────────────────────── 轉換 ─────────────────────────────
 
 pub fn parse_ts(s: &str) -> Result<i64, ApiError> {
@@ -342,56 +336,60 @@ pub async fn org_runner_groups(c: &GitHubClient, org: &str) -> Result<Vec<GroupI
             Some("runner_groups"),
         )
         .await?;
-    let mut out = Vec::with_capacity(groups.len());
-    for g in groups {
-        let base = format!("/orgs/{org}/actions/runner-groups/{}", g.id);
-        let mut known = true;
+    // 各 group 互不相依：一起送出（同時在途的請求數由 client 限制），結果維持原本的順序
+    join_all(groups.into_iter().map(|g| group_info(c, org, g)))
+        .await
+        .into_iter()
+        .collect()
+}
 
-        let runner_ids = match c
-            .get_paginated::<RawGroupRunner>(
-                &format!("{base}/runners?per_page=100"),
-                Some("runners"),
+async fn group_info(c: &GitHubClient, org: &str, g: RawGroup) -> Result<GroupInfo, ApiError> {
+    let base = format!("/orgs/{org}/actions/runner-groups/{}", g.id);
+    let unknown = |g: RawGroup| GroupInfo {
+        id: g.id,
+        name: g.name,
+        access: GroupAccess::Unknown,
+        restricted_to_workflows: g.restricted_to_workflows,
+        runner_ids: BTreeSet::new(),
+    };
+    let runner_ids: BTreeSet<u64> = match c
+        .get_paginated::<RawGroupRunner>(&format!("{base}/runners?per_page=100"), Some("runners"))
+        .await
+    {
+        Ok(rs) => rs.into_iter().map(|r| r.id).collect(),
+        Err(e) if e.is_account_wide() => return Err(e),
+        // 成員查不到：不知道這個 group 有哪些 runner，存取範圍也就沒有意義，不必再查
+        Err(_) => return Ok(unknown(g)),
+    };
+
+    let access = match g.visibility.as_str() {
+        "all" => GroupAccess::All {
+            public_ok: g.allows_public_repositories,
+        },
+        "private" => GroupAccess::Private,
+        "selected" => match c
+            .get_paginated::<RawGroupRepo>(
+                &format!("{base}/repositories?per_page=100"),
+                Some("repositories"),
             )
             .await
         {
-            Ok(rs) => rs.into_iter().map(|r| r.id).collect(),
-            Err(e) if e.is_account_wide() => return Err(e),
-            Err(_) => {
-                known = false;
-                BTreeSet::new()
-            }
-        };
-
-        let access = match g.visibility.as_str() {
-            "all" => GroupAccess::All {
+            Ok(repos) => GroupAccess::Selected {
+                repos: repos.into_iter().map(|r| r.full_name).collect(),
                 public_ok: g.allows_public_repositories,
             },
-            "private" => GroupAccess::Private,
-            "selected" => match c
-                .get_paginated::<RawGroupRepo>(
-                    &format!("{base}/repositories?per_page=100"),
-                    Some("repositories"),
-                )
-                .await
-            {
-                Ok(repos) => GroupAccess::Selected {
-                    repos: repos.into_iter().map(|r| r.full_name).collect(),
-                    public_ok: g.allows_public_repositories,
-                },
-                Err(e) if e.is_account_wide() => return Err(e),
-                Err(_) => GroupAccess::Unknown,
-            },
-            _ => GroupAccess::Unknown,
-        };
-        out.push(GroupInfo {
-            id: g.id,
-            name: g.name,
-            access: if known { access } else { GroupAccess::Unknown },
-            restricted_to_workflows: g.restricted_to_workflows,
-            runner_ids,
-        });
-    }
-    Ok(out)
+            Err(e) if e.is_account_wide() => return Err(e),
+            Err(_) => GroupAccess::Unknown,
+        },
+        _ => GroupAccess::Unknown,
+    };
+    Ok(GroupInfo {
+        id: g.id,
+        name: g.name,
+        access,
+        restricted_to_workflows: g.restricted_to_workflows,
+        runner_ids,
+    })
 }
 
 fn run_info(repo: &str, r: RawRun) -> RunInfo {
@@ -410,15 +408,18 @@ fn run_info(repo: &str, r: RawRun) -> RunInfo {
 
 /// 進行中＋排隊中＋pending 的 run，按 run id 去重（2026-11-01 實查 pending run 也包含 queued job）。
 pub async fn active_runs(c: &GitHubClient, repo: &str) -> Result<Vec<RunInfo>, ApiError> {
+    // 三種狀態互不相依：一起送出（同時在途的請求數由 client 限制）；合併時照這個順序，先出現的為準
+    let paths = ["in_progress", "queued", "pending"]
+        .map(|status| format!("/repos/{repo}/actions/runs?status={status}&per_page=100"));
+    let pages = join_all(
+        paths
+            .iter()
+            .map(|p| c.get_paginated::<RawRun>(p, Some("workflow_runs"))),
+    )
+    .await;
     let mut by_id: BTreeMap<u64, RunInfo> = BTreeMap::new();
-    for status in ["in_progress", "queued", "pending"] {
-        let runs: Vec<RawRun> = c
-            .get_paginated(
-                &format!("/repos/{repo}/actions/runs?status={status}&per_page=100"),
-                Some("workflow_runs"),
-            )
-            .await?;
-        for r in runs {
+    for runs in pages {
+        for r in runs? {
             by_id.entry(r.id).or_insert_with(|| run_info(repo, r));
         }
     }
@@ -637,99 +638,6 @@ pub async fn run_jobs_all(c: &GitHubClient, run: &RunInfo) -> Result<Vec<JobSnap
     raw.into_iter()
         .map(|j| job_snapshot(j, &run.workflow_name))
         .collect()
-}
-
-// ───────────────────────────── PR 標籤 ─────────────────────────────
-
-#[derive(Debug, Clone, PartialEq)]
-struct PullRef {
-    number: u64,
-    open: bool,
-}
-
-/// commit → PR 查詢結果，以 `(repo, head_sha)` 快取，同一個 sha 不重查。
-/// 只快取查詢結果；最終標籤仍依每個 run 的 event／branch／pr_number 組成，
-/// 避免同 SHA 的 push 與 pull_request run 共用錯誤標籤。
-#[derive(Default)]
-pub struct PrTagCache {
-    pulls: Mutex<HashMap<(String, String), Option<PullRef>>>,
-}
-
-/// 長時間執行的 App 不能讓這張表無限長大；滿了就清空（重查只花一個請求）。
-const MAX_PR_CACHE_ENTRIES: usize = 5_000;
-
-impl PrTagCache {
-    async fn first_pull(
-        &self,
-        c: &GitHubClient,
-        run: &RunInfo,
-    ) -> Result<Option<PullRef>, ApiError> {
-        let key = (run.repo.clone(), run.head_sha.clone());
-        if let Some(hit) = self.pulls.lock().expect("pr cache").get(&key) {
-            return Ok(hit.clone());
-        }
-        let pulls: Vec<RawPull> = c
-            .get_json(&format!(
-                "/repos/{}/commits/{}/pulls",
-                run.repo, run.head_sha
-            ))
-            .await?;
-        let first = pulls.into_iter().next().map(|p| PullRef {
-            number: p.number,
-            open: p.state == "open",
-        });
-        let mut cache = self.pulls.lock().expect("pr cache");
-        if cache.len() >= MAX_PR_CACHE_ENTRIES {
-            cache.clear();
-        }
-        cache.insert(key, first.clone());
-        Ok(first)
-    }
-}
-
-/// 規則照搬 `bin/pr-runners` 的 `_scan_repo`：
-/// - run 本身帶 PR 號 → `PR#N`
-/// - push 事件 → `push:{branch}`，反查到來源 PR 再補 `←#N`
-/// - 其他 → 反查 commit：open → `PR#N`、非 open → `PR#N(closed)`，查不到 → `{event}:{branch}`
-///
-/// 只在真的要顯示時才呼叫（沒有 self-hosted job 的 run 不必花這個請求）。
-/// 不查 API 就能組出的標籤：`PR#N`，或 `{event}:{branch}`（沒有 branch 就只有 event）。
-pub fn local_tag(run: &RunInfo) -> String {
-    if let Some(n) = run.pr_number {
-        return format!("PR#{n}");
-    }
-    with_branch(&run.event, run.head_branch.as_deref())
-}
-
-fn with_branch(prefix: &str, branch: Option<&str>) -> String {
-    match branch {
-        Some(b) if !b.is_empty() => format!("{prefix}:{b}"),
-        _ => prefix.to_string(),
-    }
-}
-
-pub async fn pr_tag(
-    c: &GitHubClient,
-    cache: &PrTagCache,
-    run: &RunInfo,
-) -> Result<String, ApiError> {
-    if run.pr_number.is_some() {
-        return Ok(local_tag(run));
-    }
-    let found = cache.first_pull(c, run).await?;
-    Ok(if run.event == "push" {
-        let push = with_branch("push", run.head_branch.as_deref());
-        match found {
-            Some(p) => format!("{push}←#{}", p.number),
-            None => push,
-        }
-    } else {
-        match found {
-            Some(p) if p.open => format!("PR#{}", p.number),
-            Some(p) => format!("PR#{}(closed)", p.number),
-            None => local_tag(run),
-        }
-    })
 }
 
 #[cfg(test)]

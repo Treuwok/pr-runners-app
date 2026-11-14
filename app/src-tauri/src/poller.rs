@@ -2,14 +2,14 @@
 //!
 //! 收集器只有這個迴圈會鎖；commands 透過 `Op` 佇列改它（見 state.rs）。
 
-use crate::state::{Op, Shared, reconcile};
+use crate::state::{Op, Shared};
 use pr_runners_core::Collector;
 use pr_runners_core::auth::{RefreshOutcome, refresh_if_needed};
-use pr_runners_core::persist::{AccountKind, save_snapshot, save_state};
+use pr_runners_core::persist::{AccountKind, save_state};
 use pr_runners_core::{Hold, TickMode, now_secs};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 /// 發布執行歷史：更新共享複本（`runner_history` 讀它，不碰收集器），並把還沒存成功的存到磁碟。
 fn publish_runlog(shared: &Shared, c: &Collector) {
@@ -106,14 +106,21 @@ pub async fn run_loop(app: AppHandle, shared: Arc<Shared>) {
         apply_ops(&shared).await;
         refresh_tokens(&shared).await;
 
-        let mode = if first || shared.force_full.swap(false, Ordering::SeqCst) {
+        // 先標「這一輪在回應要求」，再用 swap 取走要求（不會漏掉剛好同時到的要求）：
+        // 兩個旗標之間不會有一刻都是 false，畫面的「更新中」不會閃掉
+        if first || shared.force_full.load(Ordering::SeqCst) {
+            shared.serving_request.store(true, Ordering::SeqCst);
+        }
+        let requested = first || shared.force_full.swap(false, Ordering::SeqCst);
+        shared.serving_request.store(requested, Ordering::SeqCst);
+        let mode = if requested {
             TickMode::Full
         } else {
             TickMode::Incremental
         };
         first = false;
 
-        let (mut snap, delay) = {
+        let (snap, delay) = {
             let mut c = shared.collector.lock().await;
             if shared.resume_pending.swap(false, Ordering::SeqCst) {
                 c.resume();
@@ -125,23 +132,14 @@ pub async fn run_loop(app: AppHandle, shared: Arc<Shared>) {
             publish_runlog(&shared, &c);
             (snap, delay)
         };
-        // 被中止的一輪（背景）不發布：它是半套資料
+        // 這一輪跑完了；跑的期間又有新的要求的話，force_full 會讓畫面繼續顯示「更新中」
+        shared.serving_request.store(false, Ordering::SeqCst);
+        // 被中止的一輪（背景）不發布：它是半套資料（回前景時會再要求一輪）
         if shared.halt.load(Ordering::SeqCst) {
             continue;
         }
-        // 發布整段（對齊帳號清單 → 記住 → 存檔 → 推事件）都在 `latest` 鎖裡：
-        // 掃描期間使用者可能剛移除帳號或改勾選，命令端的「立刻修剪並推事件」也拿同一把鎖，
-        // 所以最後被畫面收到的一定是用「最新帳號清單」對齊過的那份，不會有舊的那份蓋回去。
-        {
-            let mut latest = shared.latest.lock().expect("latest");
-            let accounts = shared.accounts.lock().expect("accounts").clone();
-            reconcile(&mut snap, &accounts);
-            let _ = save_snapshot(&shared.data_dir, &snap);
-            *latest = Some(snap.clone());
-            let _ = app.emit("snapshot", &snap);
-        }
-        #[cfg(desktop)]
-        crate::tray::update(&app, &snap.summary);
+        // 掃描期間使用者可能剛登入、移除帳號或改勾選：發布前依最新的帳號清單對齊（見 `Shared::publish_scan`）
+        shared.publish_scan(&app, snap);
 
         tokio::select! {
             () = tokio::time::sleep(delay) => {}

@@ -15,6 +15,10 @@ pub struct Snapshot {
     pub generated_at: i64,
     pub accounts: Vec<AccountView>,
     pub summary: Summary,
+    /// 有一次要求的掃描還沒完成（剛啟動、登入、改勾選、下拉重新整理、回到前景）：
+    /// 畫面上的資料可能不是最新的。由發布的那一刻依輪詢狀態填入，不是掃描結果的一部分。
+    #[serde(default)]
+    pub updating: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -51,9 +55,36 @@ pub struct AccountView {
     pub scopes: Vec<ScopeView>,
 }
 
+impl Snapshot {
+    /// `generated_at`＝這一輪開始的時間；計數一律由帳號內容算出，不另外傳。
+    pub fn new(generated_at: i64, accounts: Vec<AccountView>) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            generated_at,
+            summary: crate::assemble::summarize(&accounts),
+            accounts,
+            updating: false,
+        }
+    }
+}
+
+impl AccountView {
+    /// 帳號清單裡有、但還沒有任何一輪掃描結果的帳號（剛登入、或 App 剛啟動而上次存檔沒有它）。
+    pub fn loading(account_id: u64, login: String) -> Self {
+        Self {
+            account_id,
+            login,
+            status: AccountStatus::Loading,
+            scopes: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum AccountStatus {
+    /// 帳號已加入，但還沒拿到第一份掃描結果：畫面顯示「讀取中」，不能當成沒有帳號
+    Loading,
     Ok,
     /// token 失效、或 App 被解除安裝：該帳號顯示「重新登入」
     NeedsReauth,

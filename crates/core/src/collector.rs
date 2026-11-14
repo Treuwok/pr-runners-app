@@ -1,21 +1,21 @@
 //! 收集器：熱冷分層、完整掃描、每小時請求目標、輪詢間隔。
 //!
-//! 每個帳號平行、同帳號內以 `Semaphore(8)` 限制同時請求的 repo 數。
+//! 每個帳號、同帳號內的 repo 都平行掃；同時在途的請求數由 `GitHubClient` 統一限制（每個 token 一份）。
 //! 觀察狀態與上一輪 attention 按 scope 分開保存——共用一份會讓後處理的 scope
 //! 把前一個 scope 的離線起點與 job 首見時間清掉（`evaluate` 會移除不在輸入裡的 key）。
 
-use crate::api::{self, GroupInfo, JobInfo, PrTagCache, RawRunner, RepoInfo, ScopeKind};
-use crate::assemble::{JobEntry, RunnerRec, ScopeInput, assemble, parse_runner_key, summarize};
+use crate::api::{self, GroupInfo, JobInfo, RawRunner, RepoInfo, ScopeKind};
+use crate::assemble::{JobEntry, RunnerRec, ScopeInput, assemble, parse_runner_key};
 use crate::client::{ApiError, GitHubClient};
 use crate::history::{JobHistory, WorkflowKey};
 use crate::persist::{AccountKind, AccountMeta, clamp_hourly_target};
+use crate::pr_tag::{self, PrTagCache};
 use crate::runlog::{BackfillReport, RunLog, backfill_records};
 use crate::view::*;
 use futures_util::future::join_all;
 use pr_runners_rules::{Attention, Fleet, GroupAccess, ObservationState, needs_self_hosted};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
-use tokio::sync::Semaphore;
 
 const HOT_WINDOW_SECS: i64 = 24 * 3_600;
 const COLD_INTERVAL_SECS: i64 = 600;
@@ -25,7 +25,6 @@ const FULL_SCAN_MIN_GAP_SECS: i64 = 120;
 const BUSY_DELAY_SECS: u64 = 30;
 const IDLE_DELAY_SECS: u64 = 120;
 const SLOWED_MAX_DELAY_SECS: u64 = 600;
-const MAX_PARALLEL_REPOS: usize = 8;
 /// runner 執行歷史：每個帳號每輪最多查幾個「剛結束的 job」的結果。
 const MAX_RESULTS_PER_TICK: usize = 10;
 /// 補查：只看最近幾天有推送的 repo、最多幾個 repo、每個 repo 最近幾次執行。
@@ -76,6 +75,8 @@ pub struct DelayInputs {
 
 /// 有進行中或排隊中的 job → 30 秒，否則 120 秒。
 pub fn base_delay_secs(has_work: bool) -> u64 {
+    // 連線閒置上限要比最短的輪詢間隔短（編譯期檢查）：否則閒置跨過一輪的（常已失效的）連線又會被拿來用
+    const { assert!(crate::transport::IDLE_CONNECTION_SECS < BUSY_DELAY_SECS) };
     if has_work {
         BUSY_DELAY_SECS
     } else {
@@ -136,7 +137,6 @@ struct TickEnv {
 /// 不能共用同一份 commit → PR 的查詢結果。
 struct Ctx<'a> {
     client: &'a GitHubClient,
-    sem: &'a Semaphore,
     pr_cache: &'a PrTagCache,
     account_id: u64,
 }
@@ -154,7 +154,6 @@ struct Account {
     hold: Option<Hold>,
     meta: AccountMeta,
     client: GitHubClient,
-    sem: Semaphore,
     pr_cache: PrTagCache,
     repos: Vec<RepoInfo>,
     scope_kinds: BTreeMap<String, ScopeKind>,
@@ -177,7 +176,6 @@ impl Account {
             hold: None,
             meta,
             client,
-            sem: Semaphore::new(MAX_PARALLEL_REPOS),
             pr_cache: PrTagCache::default(),
             repos: Vec::new(),
             scope_kinds: BTreeMap::new(),
@@ -271,7 +269,6 @@ impl Account {
             let mut rt = self.scopes.remove(&name).unwrap_or_default();
             let ctx = Ctx {
                 client: &self.client,
-                sem: &self.sem,
                 pr_cache: &self.pr_cache,
                 account_id: self.meta.account_id,
             };
@@ -301,12 +298,20 @@ impl Account {
         let mut kinds = BTreeMap::new();
         match self.meta.kind {
             AccountKind::GitHubApp => {
-                for ins in api::list_installations(&self.client).await? {
+                let installations = api::list_installations(&self.client).await?;
+                for ins in &installations {
                     kinds.insert(ins.account_login.clone(), ins.account_kind);
-                    if !self.meta.selected_scopes.contains(&ins.account_login) {
-                        continue;
-                    }
-                    match api::list_installation_repos(&self.client, ins.id).await {
+                }
+                // 各 installation 的 repo 清單互不相依：一起查（同時在途的請求數由 client 限制）
+                let selected = installations
+                    .iter()
+                    .filter(|ins| self.meta.selected_scopes.contains(&ins.account_login));
+                let lists = join_all(
+                    selected.map(|ins| api::list_installation_repos(&self.client, ins.id)),
+                )
+                .await;
+                for list in lists {
+                    match list {
                         Ok(r) => repos.extend(r),
                         // installation 404＝App 被解除安裝：該帳號要重新登入
                         Err(ApiError::NotFound) => return Err(ApiError::Unauthorized),
@@ -343,7 +348,6 @@ async fn scan_repo(
     want_runners: bool,
 ) -> Result<RepoScan, ApiError> {
     let (c, cache) = (ctx.client, ctx.pr_cache);
-    let _permit = ctx.sem.acquire().await.expect("semaphore closed");
     let (mut runners, mut runners_forbidden) = (None, false);
     if want_runners {
         match api::repo_runners(c, &repo.full_name).await {
@@ -355,42 +359,59 @@ async fn scan_repo(
             Err(e) => return Err(e),
         }
     }
+    // 同一個 repo 的各個 run 互不相依：一起查（同時在途的請求數由 client 限制），結果維持 run 的順序
+    let runs = api::active_runs(c, &repo.full_name).await?;
     let mut entries = Vec::new();
-    for run in api::active_runs(c, &repo.full_name).await? {
-        let jobs = api::run_jobs(c, &run, !repo.private).await?;
-        if jobs.is_empty() {
-            continue;
-        }
-        // PR 反查只在這個 run 真的有 self-hosted 或臨時機器的 job 要顯示時才做
-        // （整個 run 可能只剩臨時機器的 job，仍要帶 PR 標籤）。這裡只看這個 run 的 runner 名稱形狀；
-        // 還在排隊、沒有 runner 名稱的臨時機器 job 認不出來，退回本地標籤。
-        let fleet = Fleet::observe(
-            jobs.iter().filter_map(|j| j.facts.runner_name.as_deref()),
-            jobs.iter()
-                .flat_map(|j| j.facts.labels.iter().map(String::as_str)),
-        );
-        let tag = if jobs.iter().any(|j| {
-            needs_self_hosted(&j.facts)
-                || j.facts
-                    .runner_name
-                    .as_deref()
-                    .is_some_and(|n| fleet.stem_of(n).is_some())
-        }) {
-            match api::pr_tag(c, cache, &run).await {
-                Ok(t) => t,
-                Err(e) if e.is_account_wide() => return Err(e),
-                Err(_) => api::local_tag(&run),
-            }
-        } else {
-            api::local_tag(&run)
-        };
-        entries.push(RunEntry { tag, jobs });
+    for entry in join_all(
+        runs.iter()
+            .map(|run| scan_run(c, cache, run, !repo.private)),
+    )
+    .await
+    {
+        entries.extend(entry?);
     }
     Ok(RepoScan {
         runners,
         runners_forbidden,
         runs: entries,
     })
+}
+
+/// 一個 run 的 job 與 PR 標籤；沒有要顯示的 job 時是 `None`。
+async fn scan_run(
+    c: &GitHubClient,
+    cache: &PrTagCache,
+    run: &api::RunInfo,
+    repo_public: bool,
+) -> Result<Option<RunEntry>, ApiError> {
+    let jobs = api::run_jobs(c, run, repo_public).await?;
+    if jobs.is_empty() {
+        return Ok(None);
+    }
+    // PR 反查只在這個 run 真的有 self-hosted 或臨時機器的 job 要顯示時才做
+    // （整個 run 可能只剩臨時機器的 job，仍要帶 PR 標籤）。這裡只看這個 run 的 runner 名稱形狀；
+    // 還在排隊、沒有 runner 名稱的臨時機器 job 認不出來，退回本地標籤。
+    let fleet = Fleet::observe(
+        jobs.iter().filter_map(|j| j.facts.runner_name.as_deref()),
+        jobs.iter()
+            .flat_map(|j| j.facts.labels.iter().map(String::as_str)),
+    );
+    let tag = if jobs.iter().any(|j| {
+        needs_self_hosted(&j.facts)
+            || j.facts
+                .runner_name
+                .as_deref()
+                .is_some_and(|n| fleet.stem_of(n).is_some())
+    }) {
+        match pr_tag::pr_tag(c, cache, run).await {
+            Ok(t) => t,
+            Err(e) if e.is_account_wide() => return Err(e),
+            Err(_) => pr_tag::local_tag(run),
+        }
+    } else {
+        pr_tag::local_tag(run)
+    };
+    Ok(Some(RunEntry { tag, jobs }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -736,7 +757,7 @@ impl Collector {
                     continue;
                 };
                 for rec in
-                    backfill_records(run, &jobs, runner_id, runner_name, &api::local_tag(run))
+                    backfill_records(run, &jobs, runner_id, runner_name, &pr_tag::local_tag(run))
                 {
                     if self.runlog.insert(runner_key, account_id, rec) {
                         report.added += 1;
@@ -824,8 +845,12 @@ impl Collector {
 
     /// Android 回到前景：下一輪每個 scope 都視為「第一次看到」。
     pub fn resume(&mut self) {
-        for rt in self.accounts.iter_mut().flat_map(|a| a.scopes.values_mut()) {
-            rt.observed = false;
+        for a in &mut self.accounts {
+            // 裝置睡眠期間連線的閒置時間不累計：背景前留下的連線看起來還很新，其實多半已失效
+            a.client.reset_connections();
+            for rt in a.scopes.values_mut() {
+                rt.observed = false;
+            }
         }
     }
 
@@ -859,13 +884,7 @@ impl Collector {
         if effective == TickMode::Incremental {
             self.last_incremental_cost = billed(&self.accounts).saturating_sub(before);
         }
-        let summary = summarize(&views);
-        Snapshot {
-            schema_version: SCHEMA_VERSION,
-            generated_at: now,
-            accounts: views,
-            summary,
-        }
+        Snapshot::new(now, views)
     }
 
     /// 這一輪之後等多久再輪詢。真的被限流（收到 403／429）的帳號由用戶端擋住提前重試；
