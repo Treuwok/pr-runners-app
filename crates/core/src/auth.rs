@@ -223,6 +223,12 @@ impl DeviceFlow {
         match b.error.as_deref() {
             None => self.token_set(b),
             Some("bad_refresh_token") => Err(AuthError::InvalidGrant),
+            // 這顆 refresh token 不是這個 client ID 發的（例如 dev 版與正式版曾共用金鑰庫、被對方蓋掉）。
+            // 重試永遠不會好，只能重新登入；當成暫時離線的話，畫面會一直停在 Offline 而沒有任何提示
+            Some("incorrect_client_credentials") => {
+                crate::diag::log("refresh", &format!("{}", Self::protocol_error(&b)));
+                Err(AuthError::InvalidGrant)
+            }
             Some(_) => Err(Self::protocol_error(&b)),
         }
     }
@@ -265,8 +271,20 @@ pub async fn refresh_if_needed(
 ) -> RefreshOutcome {
     let token = match store.get(account_id) {
         Ok(Some(t)) => t,
-        Ok(None) => return RefreshOutcome::NeedsReauth,
-        Err(_) => return RefreshOutcome::Offline,
+        Ok(None) => {
+            crate::diag::log(
+                "refresh",
+                &format!("帳號 {account_id}：金鑰庫裡沒有 token → NeedsReauth"),
+            );
+            return RefreshOutcome::NeedsReauth;
+        }
+        Err(e) => {
+            crate::diag::log(
+                "refresh",
+                &format!("帳號 {account_id}：讀金鑰庫失敗 → Offline：{e}"),
+            );
+            return RefreshOutcome::Offline;
+        }
     };
     if !needs_refresh(&token, now) {
         return RefreshOutcome::NotNeeded;
@@ -282,8 +300,23 @@ pub async fn refresh_if_needed(
                 access_token: new.access_token,
             }
         }
-        Err(AuthError::InvalidGrant) => RefreshOutcome::NeedsReauth,
-        Err(AuthError::Network(_) | AuthError::Protocol(_)) => RefreshOutcome::Offline,
+        Err(AuthError::InvalidGrant) => {
+            crate::diag::log(
+                "refresh",
+                &format!(
+                    "帳號 {account_id}：{} → NeedsReauth",
+                    AuthError::InvalidGrant
+                ),
+            );
+            RefreshOutcome::NeedsReauth
+        }
+        Err(e @ (AuthError::Network(_) | AuthError::Protocol(_))) => {
+            crate::diag::log(
+                "refresh",
+                &format!("帳號 {account_id}：續期失敗 → Offline：{e}"),
+            );
+            RefreshOutcome::Offline
+        }
     }
 }
 
