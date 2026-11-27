@@ -5,6 +5,7 @@ pub mod assemble;
 pub mod auth;
 pub mod client;
 pub mod collector;
+pub mod diag;
 pub mod history;
 pub mod persist;
 pub mod pr_tag;

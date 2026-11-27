@@ -93,6 +93,12 @@ export PR_RUNNERS_GITHUB_APP_SLUG=pr-runners-dev      # 安裝頁網址；沒設
 
 沒設 `PR_RUNNERS_GITHUB_CLIENT_ID` 時，App 的「用 GitHub 登入」會顯示「此版本未設定 GitHub App」（仍可改用 Personal Access Token）。
 
+token 在金鑰庫裡的 key 帶 client ID（`github:<client ID>:<帳號 ID>`）：refresh token 綁定發它的那個 GitHub App，dev 版與正式版若共用同一個 key，後登入的一邊會蓋掉另一邊，被蓋掉的那邊就再也續不了期。所以 dev 版與正式版的登入各自獨立，各登入一次。升級前存的舊格式 key（`github:<帳號 ID>`）仍讀得到。
+
+### 帳號一直顯示離線時
+
+選單列顯示 Offline、但網路明明正常：看 App 資料夾（Mac 是 `~/Library/Application Support/com.treuwok.prrunners/`）裡的 `diagnostic.log`。續期失敗、金鑰庫讀不到、掃描時的 API 錯誤都會記在這裡（每行 `Unix 秒 [refresh|scan] 訊息`；只記錯誤種類與訊息，不記 token）。`incorrect_client_credentials` 表示這顆 token 不是目前這個 client ID 發的，帳號會要求重新登入。
+
 ### 建置與執行
 
 ```sh

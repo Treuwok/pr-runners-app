@@ -227,11 +227,24 @@ async fn refresh_error_classification() {
         json!({"error": "unauthorized_client"}),
     )
     .await;
+    // 這顆 token 不是這個 client ID 發的（例如 dev 版與正式版共用金鑰庫時被蓋掉）：重試一百次也不會好
+    json_only(
+        &s,
+        "/login/oauth/access_token",
+        "refresh_token=foreign",
+        json!({"error": "incorrect_client_credentials", "error_description": "bad id"}),
+    )
+    .await;
     let f = flow(&s);
     assert_eq!(f.refresh("dead").await, Err(AuthError::InvalidGrant));
+    assert_eq!(
+        f.refresh("foreign").await,
+        Err(AuthError::InvalidGrant),
+        "incorrect_client_credentials 是永久性錯誤：要重新登入，不能當成暫時離線"
+    );
     assert!(
         matches!(f.refresh("odd").await, Err(AuthError::Protocol(_))),
-        "只有 bad_refresh_token 才是 InvalidGrant"
+        "其他未知的 OAuth 錯誤仍當成暫時性的（Offline）"
     );
 
     // 連線失敗 → Network（帳號暫時離線，不要求重新登入）

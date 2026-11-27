@@ -218,7 +218,17 @@ impl Account {
                 };
                 (status, scopes)
             }
-            Err(ApiError::Unauthorized) => (AccountStatus::NeedsReauth, self.last_view.clone()),
+            Err(ApiError::Unauthorized) => {
+                crate::diag::log(
+                    "scan",
+                    &format!(
+                        "帳號 {}：{} → NeedsReauth",
+                        self.meta.account_id,
+                        ApiError::Unauthorized
+                    ),
+                );
+                (AccountStatus::NeedsReauth, self.last_view.clone())
+            }
             Err(ApiError::RateLimited { reset_at }) => (
                 AccountStatus::Throttled {
                     remaining: rate.remaining,
@@ -226,12 +236,18 @@ impl Account {
                 },
                 self.last_view.clone(),
             ),
-            Err(_) => (
-                AccountStatus::Offline {
-                    last_ok_at: self.last_ok_at,
-                },
-                self.last_view.clone(),
-            ),
+            Err(e) => {
+                crate::diag::log(
+                    "scan",
+                    &format!("帳號 {}：掃描失敗 → Offline：{e}", self.meta.account_id),
+                );
+                (
+                    AccountStatus::Offline {
+                        last_ok_at: self.last_ok_at,
+                    },
+                    self.last_view.clone(),
+                )
+            }
         };
         AccountView {
             account_id: self.meta.account_id,

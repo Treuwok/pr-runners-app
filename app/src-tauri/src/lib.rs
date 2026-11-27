@@ -95,6 +95,7 @@ pub fn run() {
             tray::setup(app)?;
 
             let data_dir = app.path().app_data_dir()?;
+            pr_runners_core::diag::init(&data_dir);
             // 上次設定的「主視窗永遠在最上層」
             #[cfg(desktop)]
             tray::apply_always_on_top(app.handle(), load_settings(&data_dir).always_on_top);
