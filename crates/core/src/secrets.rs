@@ -1,4 +1,5 @@
-//! token 只放系統金鑰庫（service `"pr-runners"`，user `"github:<user_id>"`），不寫進明文檔案。
+//! token 只放系統金鑰庫（service `"pr-runners"`，user `"github:<client_id>:<user_id>"`），不寫進明文檔案。
+//! 升級前的舊格式 `"github:<user_id>"` 讀得到（見 [`KeyringStore`]）。
 //!
 //! 金鑰庫用 keyring 4.2 官方建議的 `keyring-core` ＋平台 store：必須先建立平台 store 並
 //! `keyring_core::set_default_store`，才能建立 `Entry`。不混用 keyring 4.2 預設的 `v1` Entry
@@ -25,20 +26,41 @@ pub trait SecretStore: Send + Sync {
 
 const SERVICE: &str = "pr-runners";
 
-fn user(account_id: u64) -> String {
+/// 舊格式的 key（沒有 client ID）。升級前存的 token 都在這裡。
+fn legacy_user(account_id: u64) -> String {
     format!("github:{account_id}")
+}
+
+/// GitHub 會拒絕用別的 client ID 續期：refresh token 綁定發它的那個 GitHub App。
+/// dev 版（`pr-runners-dev`）與正式版若共用同一個 key，後登入的一邊會蓋掉另一邊的 token，
+/// 被蓋掉的那邊就再也續不了期。所以 key 帶上 client ID，各存各的。
+fn user(client_id: Option<&str>, account_id: u64) -> String {
+    match client_id {
+        Some(c) => format!("github:{c}:{account_id}"),
+        None => legacy_user(account_id),
+    }
 }
 
 /// 系統金鑰庫。使用前必須已經設定 default store。
 #[derive(Debug, Default, Clone, Copy)]
-pub struct KeyringStore;
+pub struct KeyringStore {
+    /// 建置時的 GitHub App client ID；沒有（只用 PAT 的建置）就沿用舊格式的 key
+    client_id: Option<&'static str>,
+}
 
 impl KeyringStore {
     pub fn new() -> Self {
-        Self
+        Self {
+            client_id: crate::auth::CLIENT_ID,
+        }
     }
 
-    fn entry(account_id: u64) -> Result<keyring_core::Entry, SecretError> {
+    #[cfg(test)]
+    fn with_client_id(client_id: Option<&'static str>) -> Self {
+        Self { client_id }
+    }
+
+    fn entry_for(user: &str) -> Result<keyring_core::Entry, SecretError> {
         // iOS：token 只能留在這支手機。預設的存取政策（WhenUnlocked）會跟著加密備份還原到別台裝置；
         // 改成 WhenUnlockedThisDeviceOnly：保留「裝置鎖定時讀不到」的保護，再加上不離開這支裝置。
         // 不選 AfterFirstUnlock：iOS 鎖定後 App 會被暫停，沒有背景讀取的需要；鎖定時寫入失敗由
@@ -46,21 +68,16 @@ impl KeyringStore {
         #[cfg(target_os = "ios")]
         let entry = keyring_core::Entry::new_with_modifiers(
             SERVICE,
-            &user(account_id),
-            &std::collections::HashMap::from([(
-                "access-policy",
-                "when-unlocked-this-device-only",
-            )]),
+            user,
+            &std::collections::HashMap::from([("access-policy", "when-unlocked-this-device-only")]),
         );
         #[cfg(not(target_os = "ios"))]
-        let entry = keyring_core::Entry::new(SERVICE, &user(account_id));
+        let entry = keyring_core::Entry::new(SERVICE, user);
         entry.map_err(|e| SecretError::Store(e.to_string()))
     }
-}
 
-impl SecretStore for KeyringStore {
-    fn get(&self, account_id: u64) -> Result<Option<TokenSet>, SecretError> {
-        match Self::entry(account_id)?.get_password() {
+    fn read(user: &str) -> Result<Option<TokenSet>, SecretError> {
+        match Self::entry_for(user)?.get_password() {
             Ok(json) => serde_json::from_str(&json)
                 .map(Some)
                 .map_err(|e| SecretError::Corrupt(e.to_string())),
@@ -69,19 +86,42 @@ impl SecretStore for KeyringStore {
         }
     }
 
+    fn remove(user: &str) -> Result<(), SecretError> {
+        match Self::entry_for(user)?.delete_credential() {
+            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+            Err(e) => Err(SecretError::Store(e.to_string())),
+        }
+    }
+}
+
+impl SecretStore for KeyringStore {
+    /// 先讀自己 client ID 的那一份；沒有才讀舊格式的 key（升級前存的，使用者不必重新登入）。
+    /// 舊 key 讀到的若其實是別的 client ID 發的，續期時 GitHub 會回 `incorrect_client_credentials`，
+    /// 帳號會要求重新登入，不會動到那顆 token。
+    fn get(&self, account_id: u64) -> Result<Option<TokenSet>, SecretError> {
+        if let Some(t) = Self::read(&user(self.client_id, account_id))? {
+            return Ok(Some(t));
+        }
+        if self.client_id.is_some() {
+            return Self::read(&legacy_user(account_id));
+        }
+        Ok(None)
+    }
+
     fn put(&self, account_id: u64, t: &TokenSet) -> Result<(), SecretError> {
         let json = serde_json::to_string(t).map_err(|e| SecretError::Corrupt(e.to_string()))?;
-        Self::entry(account_id)?
+        Self::entry_for(&user(self.client_id, account_id))?
             .set_password(&json)
             .map_err(|e| SecretError::Store(e.to_string()))
     }
 
-    /// 本來就沒有也算成功。
+    /// 本來就沒有也算成功。連舊 key 一起刪：只刪自己那份的話，下一次 `get` 會從舊 key 把舊 token 讀回來。
     fn delete(&self, account_id: u64) -> Result<(), SecretError> {
-        match Self::entry(account_id)?.delete_credential() {
-            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
-            Err(e) => Err(SecretError::Store(e.to_string())),
+        Self::remove(&user(self.client_id, account_id))?;
+        if self.client_id.is_some() {
+            Self::remove(&legacy_user(account_id))?;
         }
+        Ok(())
     }
 }
 
@@ -336,9 +376,86 @@ mod tests {
         assert_eq!(s.get(id).unwrap(), None);
     }
 
+    /// `keyring_core` 的 default store 是行程全域的：用到它的測試要排隊，不然會互相換掉對方的 store。
+    static KEYRING_LOCK: Mutex<()> = Mutex::new(());
+
+    fn fresh_mock_store() -> std::sync::MutexGuard<'static, ()> {
+        let guard = KEYRING_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        keyring_core::set_default_store(keyring_core::mock::Store::new().unwrap());
+        guard
+    }
+
+    #[test]
+    fn keyring_store_tokens_are_scoped_by_client_id() {
+        let _g = fresh_mock_store();
+        let prod = KeyringStore::with_client_id(Some("Iv_prod"));
+        let dev = KeyringStore::with_client_id(Some("Iv_dev"));
+        let prod_token = token();
+        let dev_token = TokenSet {
+            access_token: "ghu_dev".into(),
+            ..token()
+        };
+        prod.put(5, &prod_token).unwrap();
+        assert_eq!(dev.get(5).unwrap(), None, "dev 版看不到正式版的 token");
+        dev.put(5, &dev_token).unwrap();
+        assert_eq!(
+            prod.get(5).unwrap(),
+            Some(prod_token),
+            "dev 版登入不能蓋掉正式版的 token"
+        );
+        assert_eq!(dev.get(5).unwrap(), Some(dev_token));
+        prod.delete(5).unwrap();
+        assert!(dev.get(5).unwrap().is_some(), "刪除只動自己那一份");
+    }
+
+    #[test]
+    fn keyring_store_reads_legacy_key_and_prefers_its_own() {
+        let _g = fresh_mock_store();
+        let legacy = keyring_core::Entry::new(SERVICE, "github:6").unwrap();
+        legacy
+            .set_password(&serde_json::to_string(&token()).unwrap())
+            .unwrap();
+
+        let s = KeyringStore::with_client_id(Some("Iv_prod"));
+        assert_eq!(
+            s.get(6).unwrap(),
+            Some(token()),
+            "升級前存的 token（沒有 client ID 的舊 key）要讀得到，使用者不必重新登入"
+        );
+        let newer = TokenSet {
+            access_token: "ghu_new".into(),
+            ..token()
+        };
+        s.put(6, &newer).unwrap();
+        assert_eq!(s.get(6).unwrap(), Some(newer), "寫入之後以自己的 key 為準");
+
+        s.delete(6).unwrap();
+        assert_eq!(
+            s.get(6).unwrap(),
+            None,
+            "刪除要連舊 key 一起清掉，不然會冒出舊 token"
+        );
+        assert!(matches!(
+            legacy.get_password(),
+            Err(keyring_core::Error::NoEntry)
+        ));
+    }
+
+    #[test]
+    fn keyring_store_without_client_id_keeps_using_the_plain_key() {
+        let _g = fresh_mock_store();
+        let s = KeyringStore::with_client_id(None);
+        s.put(8, &token()).unwrap();
+        let plain = keyring_core::Entry::new(SERVICE, "github:8").unwrap();
+        assert!(
+            plain.get_password().is_ok(),
+            "沒設 client ID 的建置（只用 PAT）照舊"
+        );
+    }
+
     #[test]
     fn keyring_store_with_keyring_core_mock_store() {
-        keyring_core::set_default_store(keyring_core::mock::Store::new().unwrap());
+        let _g = fresh_mock_store();
         let s = KeyringStore::new();
         assert_eq!(s.get(7).unwrap(), None);
         s.put(7, &token()).unwrap();
